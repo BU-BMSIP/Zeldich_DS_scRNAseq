@@ -1,0 +1,150 @@
+---
+title: "DS_FA_scRNAseq"
+author: "Shreya Nalluri"
+date: "2024-06-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We will begin with a simple analysis, following the Seurat vignettes: https://satijalab.org/seurat/articles/integration_introduction, https://satijalab.org/seurat/articles/pbmc3k_tutorial, and  https://satijalab.org/seurat/articles/seurat5_integration
+
+I will start with integrating the euploid and trisomic matrices into one Seurat object. This will make it easier to do comparative analysis down the road. Integrative analysis can help to match shared cell types and states across datasets, which can boost statistical power, and most importantly, facilitate accurate comparative analysis across datasets. Note, this is just a start and other tools can be used to perform similar analysis such as Harmony and scVI
+
+```{r}
+# Load libraries 
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(SeuratData)
+library(SeuratWrappers)
+library(Azimuth)
+library(ggplot2)
+options(future.globals.maxSize = 1e9)
+```
+
+##Create Seurat Object 
+```{r}
+# Store root directory path 
+root_path <- "/projectnb/zeldich/GEX_FA_SN_MS/data/cellranger_counts/"
+
+# List all sample directories
+sample_names <- list.dirs(root_path, full.names = FALSE, recursive = FALSE)
+
+# Remove Report directory from sample name list 
+sample_names <- sample_names[-1]
+  
+# Generate full paths to the 'filtered_feature_bc_matrix' for each sample
+sample_paths <- file.path(root_path, sample_names, "outs", "filtered_feature_bc_matrix")
+
+metadata_path <- "/projectnb/zeldich/GEX_FA_SN_MS/data/input_samplesheet.csv"
+metadata <- read.csv(metadata_path, stringsAsFactors = FALSE)
+```
+```{r}
+
+# Create list to store each Seurat object 
+seurat_list <- list()
+
+# Loop through each sample path and create Seurat object
+for (i in 1:length(sample_paths)) {
+  sample_data <- Read10X(data.dir = sample_paths[i])
+  seurat_obj <- CreateSeuratObject(counts = sample_data, project = sample_names[i],min.cells = 3, min.features = 200)
+  seurat_list[[sample_names[i]]] <- seurat_obj
+}
+# Add metadata to each Seurat object in the list
+for (sample in names(seurat_list)) {
+  sample_metadata <- metadata %>% filter(Sample == sample)
+  
+  # Assuming 'Genotype' is a single value per sample
+  genotype_value <- sample_metadata$Genotype[1]
+  
+  # Add metadata to each cell in the Seurat object
+  seurat_list[[sample]] <- AddMetaData(seurat_list[[sample]], metadata = sample_metadata$Sample, col.name = "Sample")
+  seurat_list[[sample]] <- AddMetaData(seurat_list[[sample]], metadata = genotype_value, col.name = "Genotype")
+}
+
+# Merge all Seurat objects into a single object with specified cell IDs and project name
+combined_seurat <- merge(x = seurat_list[[1]], y = seurat_list[-1], 
+                         add.cell.ids = sample_names, project = "eu_tri_merge")
+
+# Save the combined Seurat object (optional)
+saveRDS(combined_seurat, file = "combined_seurat_with_metadata.rds")
+```
+
+
+##Pre-Processing 
+###QC and selecting cells for further analysis 
+I will filter out cells  that have very few genes (low quality cells or empty droplet), or a very high number of genes (potential doublet). Additionally, I will select cells based on the total number of molecules detected in the cell. Finally I will filter out cells that have a high percentage of reads that map to the mitochondrial genome. 
+```{r}
+# Add %mapping to Mt genome feature to seurat object 
+combined_seurat[["percent.mt"]] <- PercentageFeatureSet(combined_seurat, pattern = "^MT-")
+
+# Visualize QC metrics as a violin plot
+VlnPlot(combined_seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+Pre-filtering, it looks like there may be some sort of batch effect, as groups of of samples have similar QC metrics. I will not filter anything yet and continue to perform some preliminary analysis. 
+```{r}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(combined_seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(combined_seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+```{r}
+combined_seurat <- subset(combined_seurat, subset = nFeature_RNA > 200 & nFeature_RNA < 7000 & percent.mt < 35)
+```
+
+###Dimensionality Reduction and Clustering 
+
+```{r}
+# run standard anlaysis workflow
+#Normalize, select highly variable features, and scale data 
+combined_seurat <- NormalizeData(combined_seurat)
+combined_seurat <- FindVariableFeatures(combined_seurat)
+combined_seurat <- ScaleData(combined_seurat)
+#perform dimensionality reduction and clustering 
+combined_seurat <- RunPCA(combined_seurat)
+combined_seurat <- FindNeighbors(combined_seurat, dims = 1:30, reduction = "pca")
+combined_seurat <- FindClusters(combined_seurat, resolution = 2, cluster.name = "unintegrated_clusters")
+combined_seurat <- RunUMAP(combined_seurat, dims = 1:30, reduction = "pca", reduction.name = "umap.unintegrated")
+```
+
+
+```{r}
+#Visualize umap colored by various features to determine if there is a persistent batch effect like originally thought based on the QC metrics 
+DimPlot(combined_seurat, reduction = "umap.unintegrated", group.by = "Sample")
+DimPlot(combined_seurat, reduction = "umap.unintegrated", group.by = "seurat_clusters")
+DimPlot(combined_seurat, reduction = "umap.unintegrated", group.by ="Genotype")
+```
+###Perform Integration 
+The two conditions, euploid and trisomic will be integrated together so that the same cell type can be compared between the different conditions. Additionally, running CCA (Canonical Correlation Analysis) integration will handle any batch effects. 
+```{r}
+combined_seurat <- IntegrateLayers(object = combined_seurat, method = CCAIntegration, orig.reduction = "pca", new.reduction = "integrated.cca",
+    verbose = FALSE)
+
+# re-join layers after integration
+combined_seurat[["RNA"]] <- JoinLayers(combined_seurat[["RNA"]])
+
+combined_seurat <- FindNeighbors(combined_seurat, reduction = "integrated.cca", dims = 1:30)
+combined_seurat <- FindClusters(combined_seurat, resolution = 1)
+```
+
+```{r}
+saveRDS(combined_seurat, file = "combined_seurat_with_metadata_integrated.rds")
+combined_seurat <- RunUMAP(combined_seurat, dims = 1:30, reduction = "integrated.cca")
+```
+
+
+```{r}
+DimPlot(combined_seurat, reduction = "umap", group.by = "Sample")
+DimPlot(combined_seurat, reduction = "umap", group.by = "seurat_clusters")
+DimPlot(combined_seurat, reduction = "umap", group.by ="Genotype")
+DimPlot(combined_seurat, reduction = "umap", split.by ="Genotype")
+```
+
+
+
+
