@@ -1,0 +1,558 @@
+---
+title: "scrnaseq_zeldichpaper"
+author: "Shreya Nalluri"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Analysis method 
+
+This analysis will be based on the zeldich paper: https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2022.932384/full
+
+```{r}
+# Load packages 
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(SeuratData)
+library(SeuratWrappers)
+library(tidyverse)
+#library(Azimuth)
+library(ggplot2)
+library(sctransform)
+#library(leidenAlg)
+library(leiden)
+library(reticulate)
+library(biomaRt)
+library(decontX)
+library(celda)
+library(SingleCellExperiment)
+#library(singleCellTK)
+```
+
+
+```{r}
+# load filtered data 
+filtered_seurat <- readRDS("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/fa_scrnaseq_seurat_filtered.rds")
+filtered_seurat <- subset(x = filtered_seurat,percent.mt < 10)
+```
+
+##Remove mitochondrial genes 
+```{r}
+mito_genes <- grep("^MT-", rownames(filtered_seurat), value = TRUE)
+filtered_seurat <- subset(filtered_seurat, features = setdiff(rownames(filtered_seurat), mito_genes))
+```
+
+##Remove non-protein coding genes 
+```{r}
+# Identify protein coding genes 
+# Initialize biomaRt
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Retrieve protein-coding genes
+protein_coding_genes <- getBM(attributes = c("hgnc_symbol"), 
+                              filters = "biotype", 
+                              values = "protein_coding", 
+                              mart = ensembl)$hgnc_symbol
+filtered_seurat <- subset(filtered_seurat, features = intersect(rownames(filtered_seurat), protein_coding_genes))%>%
+  subset(percent.mt < 10) 
+
+```
+
+###Decontamination
+```{r}
+filtered_joined <- JoinLayers(seurat_sct, assay = "RNA")
+sce_obj <- as.SingleCellExperiment(filtered_joined)
+decont_sce <- decontX(sce_obj)
+```
+
+```{r}
+umap <- reducedDim(decont_sce, "decontX_UMAP")
+plotDimReduceCluster(x = decont_sce$decontX_clusters,
+    dim1 = umap[, 1], dim2 = umap[, 2])
+```
+```{r}
+plotDecontXContamination(decont_sce)
+filtered_joined[["decontXcounts"]] <- CreateAssayObject(counts = decontXcounts(decont_sce))
+```
+
+
+##Normalize and scale using sctransform 
+```{r}
+seurat_sct <- SCTransform(filtered_joined, vars.to.regress = "percent.mt", assay = "decontXcounts")
+```
+###Preliminary Clustering 
+
+```{r}
+seurat_sct <- RunPCA(object = seurat_sct)
+ElbowPlot(seurat_sct)
+```
+
+```{r}
+# Set seed
+set.seed(123456)
+
+# Run UMAP
+seurat_sct <- RunUMAP(seurat_sct, 
+                             dims = 1:17,
+			     reduction = "pca")
+
+# Plot UMAP                             
+DimPlot(seurat_sct, group.by = "line") 
+```
+
+```{r}
+# Explore heatmap of PCs
+DimHeatmap(seurat_sct, 
+           dims = 1:9, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+```{r}
+seurat_sct <- FindNeighbors(object = seurat_sct, 
+                                dims = 1:17)
+seurat_sct <- FindClusters(object = seurat_sct,
+                               resolution = c(0.2,0.3,0.4,0.5,0.6))
+```
+
+```{r}
+Idents(object = seurat_sct) <- "SCT_snn_res.0.5"
+# Plot the UMAP
+DimPlot(seurat_sct,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4)
+```
+
+```{r}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells <- FetchData(seurat_sct, 
+                     vars = c("ident", "Sample")) %>%
+        dplyr::count(ident, Sample)
+
+# Barplot of number of cells per cluster by sample
+ggplot(n_cells, aes(x=ident, y=n, fill=Sample)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_text(aes(label=n), vjust = -.2, position=position_dodge(1)) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate labels by 45 degrees
+```
+```{r}
+ggplot(seurat_sct@meta.data) +
+    geom_bar(aes(x=SCT_snn_res.0.5, fill=line), position=position_fill()) 
+```
+
+```{r}
+# UMAP of cells in each cluster by sample
+DimPlot(seurat_sct, 
+        label = TRUE, 
+        split.by = "Genotype")  + NoLegend()
+DimPlot(seurat_sct, 
+        label = TRUE, 
+        split.by = "line")  + NoLegend()
+```
+
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nUMI", "nGene", "percent.mt")
+
+FeaturePlot(seurat_sct, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+```{r}
+#Create metrics for cell type annotation
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers.csv")
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+marker_lists <- split(markers$Gene, markers$Cell.type)
+FeaturePlot(seurat_sct, 
+            reduction = "umap", 
+            features =  c("NKX2.1","NKX2-1","AQP4","TBR1","FEZF2","HES1","HOPX","SATB2","CCL4","CRYAB","OLIG1","SOX2"),
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+```{r}
+# Ridge plots - from ggridges. Visualize single cell expression distributions in each cluster
+#RidgePlot(seurat_sct, features = marker_lists[["NPC/RGC"]],ncol = 3)
+# Assuming markers is a data frame with a column named Gene
+#marker_lists$Gene[which(marker_lists$Gene == "NECTIN3")] <- marker_lists$Gene[which(marker_lists$Gene == "NECTIN 3")]
+
+VlnPlot(seurat_sct, features = c("NKX2.1","NKX2-1","AQP4","TBR1","FEZF2","HES1","HOPX","SATB2","CCL4","CRYAB","OLIG1","SOX2"))
+```
+
+
+
+
+
+
+```{r}
+12 = "InN"
+```
+
+
+
+```{r}
+# Read the CSV file
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers.csv")
+
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+# Split the markers into lists by cell type
+marker_lists <- split(markers$Gene, markers$Cell.type)
+
+FeaturePlot(filtered_seurat_soup, 
+            reduction = "umap", 
+            features =  c("NKX2.1","NKX2-1","AQP4","TBR1","FEZF2","HES1","HOPX","SATB2","CCL4","CRYAB","LHX6","OLIG1","SOX2"),
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+
+# Ridge plots - from ggridges. Visualize single cell expression distributions in each cluster
+RidgePlot(pbmc3k.final, features = features, ncol = 2)
+```
+
+```{r}
+seurat_sct <- PrepSCTFindMarkers(seurat_sct)
+all_markers <- FindAllMarkers(seurat_sct)
+```
+```{r}
+saveRDS(all_markers, file = "all_markers.rds")
+```
+
+```{r}
+top10 <- all_markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, 
+        wt = avg_log2FC)
+
+
+```
+
+```{r}
+top10_list <- split(top10$gene,top10$cluster) 
+
+  
+FeaturePlot(seurat_sct, 
+            reduction = "umap", 
+            features = top10_list[["1"]],
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+
+VlnPlot(seurat_sct, features = top10_list[["1"]])
+```
+
+```{r}
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers.csv")
+marker_lists <- split(markers$Gene, markers$Cell.type)
+FeaturePlot(filtered_seurat_soup, 
+            reduction = "umap", 
+            features =  marker_lists[["pre-OPC"]],
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+```{r}
+# Assuming top10_list is a list where each element is a character vector of top 10 genes for a cluster
+top5 <- all_markers %>%
+  group_by(cluster) %>%
+  top_n(n = 5, 
+        wt = avg_log2FC)
+top5_list <- split(top5$gene,top5$cluster) 
+# Flatten the top10_list to get a vector of unique gene names
+all_top_genes <- unique(unlist(top5_list))
+
+# Generate the dot plot
+DotPlot(seurat_sct, 
+        features = all_top_genes) + 
+  RotatedAxis() +
+  ggtitle("Top 5 Differentially Expressed Genes per Cluster")
+
+```
+
+###Find markers by grouping clusters 
+Group Clusters 7,4,5,0,1,6,9
+And compare with clusters 2,3,10,11,12 
+
+NKX2.1 (also known as NKX2-1) marking MGE cells, AQP4 marking glia/astrocytes, TBR1 marking excitatory neurons, FEZF2 marking deep layer excitatory neurons, HES1 marking radial glia, HOPX marking outer radial glia, SATB2 marking upper layer excitatory neurons, CCL4 marking microglia, CRYAB marking truncated radial glia, LHX6 marking MGE-derived interneurons, OLIG1 marking oligodendrocyte precursors, and SOX2 marking radial glia
+
+8 is on its own for now 
+```{r}
+### Find markers distinguishing left from right clusters 
+high_lev_markers <- FindMarkers(filtered_seurat_soup, ident.1 = c(7,4,5,0,1,6,9), ident.2 = c(2,3,10,11,12))
+high_10 <- head(high_lev_markers, n = 10)
+```
+
+```{r}
+FeaturePlot(filtered_seurat_soup, 
+            reduction = "umap", 
+            features =  c("NKX2.1","NKX2-1","AQP4","TBR1","FEZF2","HES1","HOPX","SATB2","CCL4","CRYAB","LHX6","OLIG1","SOX2"),
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+```{r}
+annotations <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cluster_annotations.csv")
+new.cluster.ids <- annotations$Identity
+names(new.cluster.ids) <- levels(seurat_sct)
+seurat_sct <- RenameIdents(seurat_sct, new.cluster.ids)
+DimPlot(seurat_sct, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
+```
+
+```{r}
+### Find markers distinguishing cluster 15 from the other right clusters  
+markers_0 <- FindMarkers(seurat_sct, ident.1 = 0, ident.2 = c(9,15,7))
+
+# Load required library
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)  # Load appropriate organism annotation package
+
+markers_filtered <- markers_0 %>%
+  subset(abs(avg_log2FC) > 0.5)%>%
+   rownames_to_column(var = "Gene")
+
+
+# Convert 'Gene' column to Entrez Gene IDs using org.Hs.eg.db (if necessary)
+# Replace 'Gene' with appropriate column name if it contains gene IDs instead of symbols
+geneIDs <- bitr(markers_filtered$Gene, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Combine gene IDs with cluster information
+genes_cluster <- merge(geneIDs, markers_filtered, by.x = "SYMBOL", by.y = "Gene")%>%
+  arrange(desc(avg_log2FC))
+
+# Perform GO enrichment analysis for each cluster
+#clusters <- unique(genes_cluster$cluster)
+go_results <- list()
+
+    genes_go <- genes_cluster$ENTREZID
+    geneList <- enrichGO(gene = genes_go,
+                         OrgDb = org.Hs.eg.db,
+                         ont = "BP",  # Biological Process ontology
+                         pvalueCutoff = 0.05,
+                         qvalueCutoff = 0.2,
+                         keyType = "ENTREZID")
+    
+# Access and analyze results in 'go_results'
+```
+
+```{r}
+markers_5 <- FindMarkers(seurat_sct, ident.1 = 5, ident.2 = c(1,2,3,4,6,8,10,11,12,13,14))
+
+# FeaturePlot(filtered_seurat_soup, 
+#             reduction = "umap", 
+#             features =  rownames(markers_0),
+#             pt.size = 0.4, 
+#             order = TRUE,
+#             min.cutoff = 'q10',
+#             label = TRUE)
+```
+
+###Preliminary Cluster Annotations 
+```{r}
+annotations <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cluster_annotations.csv")
+new.cluster.ids <- annotations$Identity
+names(new.cluster.ids) <- levels(seurat_sct)
+seurat_sct <- RenameIdents(seurat_sct, new.cluster.ids)
+DimPlot(seurat_sct, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
+```
+
+
+
+
+
+###Try an unsupervised approash with singleR
+
+```{r}
+library(SingleR)
+library(celldex)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+###DAVID Gene Ontology 
+```{r}
+library(RDAVIDWebService)
+# Authenticate with DAVID web service
+david <- DAVIDWebService$new(email="nalluris@bu.edu")
+
+# Perform DAVID analysis for each cluster
+david_results <- lapply(all_markers, function(genes) {
+  addList(david, genes, idType="GENE_SYMBOL", listName="cluster", listType="Gene")
+  setAnnotationCategories(david, c("GOTERM_BP_ALL", "GOTERM_MF_ALL", "GOTERM_CC_ALL"))
+  getFunctionalAnnotationChart(david)
+})
+
+```
+
+```{r}
+# Load required library
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)  # Load appropriate organism annotation package
+
+
+all_markers_filtered <- subset(all_markers, abs(avg_log2FC) > 0.5)
+
+# Convert 'Gene' column to Entrez Gene IDs using org.Hs.eg.db (if necessary)
+# Replace 'Gene' with appropriate column name if it contains gene IDs instead of symbols
+geneIDs <- bitr(all_markers_filtered$Gene, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Combine gene IDs with cluster information
+genes_cluster <- merge(geneIDs, all_markers_filtered, by.x = "SYMBOL", by.y = "Gene")%>%
+  sort(decreasing = TRUE)
+
+# Perform GO enrichment analysis for each cluster
+clusters <- unique(genes_cluster$cluster)
+go_results <- list()
+
+for (cluster_id in clusters) {
+    cluster_genes <- genes_cluster$ENTREZID[genes_cluster$cluster == cluster_id]
+    geneList <- enrichGO(gene = cluster_genes,
+                         OrgDb = org.Hs.eg.db,
+                         ont = "BP",  # Biological Process ontology
+                         pvalueCutoff = 0.05,
+                         qvalueCutoff = 0.2,
+                         keyType = "ENTREZID")
+    
+    go_results[[as.character(cluster_id)]] <- geneList
+}
+
+
+
+
+barplot(geneList, showCategory = 20)
+# Access and analyze results in 'go_results'
+
+
+
+
+
+
+```
+```{r}
+for (cluster_id in names(go_results)) {
+    # Extract data for the current cluster
+    cluster_data <- go_results[[cluster_id]]
+    
+    # Convert data to a format suitable for ggplot2
+    plot_data <- data.frame(
+        GO.Term = names(cluster_data),
+        p.adjust = cluster_data$p.adjust
+    )
+    
+    # Create the bar plot using ggplot2
+    ggplot(plot_data, aes(x = reorder(GO.Term, -p.adjust), y = -log10(p.adjust))) +
+        geom_bar(stat = "identity", fill = "skyblue") +
+        labs(title = paste("GO Enrichment Analysis for Cluster", cluster_id),
+             x = "GO Term", y = "-log10(p.adjust)") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+
+```
+
+
+###Cell Cycle Analysis 
+```{r}
+# Normalize the counts
+seurat_phase <- JoinLayers(filtered_seurat)
+# Normalize the counts
+seurat_phase <- NormalizeData(seurat_phase)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seurat_phase <- CellCycleScoring(seurat_phase, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+```
+```{r}
+# Identify the most variable genes
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                     selection.method = "vst",
+                     nfeatures = 2000, 
+                     verbose = FALSE)
+		     
+# Scale the counts
+seurat_phase <- ScaleData(seurat_phase)
+
+# Identify the 15 most highly variable genes
+ranked_variable_genes <- VariableFeatures(seurat_phase)
+top_genes <- ranked_variable_genes[1:15]
+
+# Plot the average expression and variance of these genes
+# With labels to indicate which genes are in the top 15
+p <- VariableFeaturePlot(seurat_phase)
+LabelPoints(plot = p, points = top_genes, repel = TRUE)
+```
+
+```{r}
+# Perform PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+# Plot the PCA colored by cell cycle phase
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "Phase")
+```
+
+
+```{r}
+library(Seurat)
+library(dplyr)
+
+# Load your Seurat object
+# filtered_seurat <- readRDS("path_to_your_seurat_object.rds")
+
+# Identify mitochondrial genes
+mito_genes <- grep("^MT-", rownames(filtered_seurat), value = TRUE)
+filtered_seurat <- subset(filtered_seurat, features = setdiff(rownames(filtered_seurat), mito_genes))
+
+# Identify protein coding genes 
+# Initialize biomaRt
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Retrieve protein-coding genes
+protein_coding_genes <- getBM(attributes = c("hgnc_symbol"), 
+                              filters = "biotype", 
+                              values = "protein_coding", 
+                              mart = ensembl)$hgnc_symbol
+filtered_seurat <- subset(filtered_seurat, features = intersect(rownames(filtered_seurat), protein_coding_genes))
+
+# saveRDS(filtered_seurat, "path_to_save_updated_seurat_object.rds")
+```
+
+```{r}
+
+```
+
