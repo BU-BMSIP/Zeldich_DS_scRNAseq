@@ -1,0 +1,1334 @@
+---
+title: "singlecellTK"
+author: "Shreya Nalluri"
+date: "2024-07-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(SeuratData)
+library(SeuratWrappers)
+library(tidyverse)
+#library(Azimuth)
+library(ggplot2)
+library(sctransform)
+#library(leidenAlg)
+#library(leiden)
+#library(reticulate)
+library(biomaRt)
+#library(decontX)
+library(singleCellTK)
+
+selectSCTKVirtualEnvironment("sctk-reticulate")
+```
+
+
+###Read in data for singleCellTK
+```{r pressure, echo=FALSE}
+dropletsce <- importCellRangerV3(cellRangerDirs = "/projectnb/zeldich/GEX_FA_SN_MS/data/cellranger_counts/scRNA-seq",dataType = "raw")
+cellsce <- importCellRangerV3(cellRangerDirs = "/projectnb/zeldich/GEX_FA_SN_MS/data/cellranger_counts/scRNA-seq",dataType = "filtered")
+sample.vector = colData(cellsce)$sample
+```
+
+###Cell QC 
+
+```{r}
+# UMAP:
+cellsce <- runUMAP(
+  inSCE = cellsce,
+  useAssay = "counts",
+  useAltExp = NULL,
+  useReducedDim = NULL,
+  sample = NULL,
+  reducedDimName = "UMAP",
+  logNorm = TRUE,
+  nNeighbors = 30,
+  nIterations = 200,
+  alpha = 1,
+  minDist = 0.01,
+  spread = 1,
+  pca = TRUE,
+  initialDims = 25,
+  nTop = 2000,
+  seed = NULL
+)
+
+# TSNE (not run):
+# pbmc <- getTSNE(inSCE=pbmc, useAssay="counts", logNorm = TRUE, sample = colData(pbmc)$sample)
+```
+```{r}
+###Add gene id column to convert ensembl ids 
+# Load required libraries
+library(SingleCellExperiment)
+library(biomaRt)
+library(dplyr)
+library(ensembldb)
+library(EnsDb.Hsapiens.v86)
+ # Load human genes database (version may differ)
+# Load the necessary library
+
+# Retrieve mitochondrial genes
+mito_gns <- genes(EnsDb.Hsapiens.v86, filter = ~ seq_name == "MT")
+
+# Extract the gene IDs
+gene_ids <- mito_gns$gene_id
+
+# Create a named list where names are gene IDs
+named_gene_ids <- setNames(as.list(gene_ids), gene_ids)
+
+# Check the result
+print(named_gene_ids)
+
+
+```
+
+```{r}
+# cellsce <- importGeneSetsFromGMT(inSCE = cellsce, collectionName = "mito", file = system.file("extdata/mito_subset.gmt", package = "singleCellTK"))
+
+# importGeneSetsFromList(
+#   inSCE = cellsce,
+#   geneSetList = named_gene_ids,
+#   collectionName = "mito",
+#   by = "rownames"
+# )
+
+set.seed(12345)
+cellsce  <- runCellQC(cellsce ,
+                           algorithms = c("QCMetrics","scDblFinder","cxds","bcds", "cxds_bcds_hybrid", "doubletFinder", "decontX", "soupX"),
+                           mitoRef = "human", mitoIDType = "ensembl", mitoGeneLocation = "rownames")
+saveRDS(cellsce,"merge_sctk_sceobj.rds")
+
+```
+```{r}
+cellsce <- readRDS("merge_sctk_sceobj.rds")
+```
+
+
+
+
+
+##QC summary stats
+```{r}
+cellsce <- sampleSummaryStats(cellsce, sample = sample.vector, simple = FALSE)
+getSampleSummaryStatsTable(cellsce, statsName = "qc_table")
+
+```
+
+
+```{r}
+runpercellqc.results <- plotRunPerCellQCResults(inSCE = cellsce, sample = sample.vector, combinePlot = "all", axisSize = 8, axisLabelSize = 9, titleSize = 20, labelSamples=TRUE)
+
+scDblFinder.results <- plotScDblFinderResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "sample",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+doubletFinderResults <- plotDoubletFinderResults(
+  inSCE = cellsce,
+  sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP",
+  combinePlot = "sample",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+cxdsResults <- plotCxdsResults(
+  inSCE = cellsce,
+  sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "sample",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+bcdsResults <- plotBcdsResults(
+  inSCE = cellsce,
+  sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "sample",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+bcdsCxdsHybridResults <- plotScdsHybridResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "sample",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+decontxResults <- plotDecontXResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "sample",
+  titleSize = 8,
+  axisLabelSize = 8,
+  axisSize = 10,
+  legendSize = 5,
+  legendTitleSize = 7,
+  relWidths = c(0.5, 1, 1),
+  sampleRelWidths = c(0.5, 1, 1),
+  labelSamples = TRUE,
+  labelClusters = FALSE
+)
+
+soupxResults <- plotSoupXResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "sample",
+  titleSize = 8,
+  axisLabelSize = 8,
+  axisSize = 10,
+  legendSize = 5,
+  legendTitleSize = 7,
+  labelClusters = FALSE
+)
+
+```
+```{r}
+###Add doublet data to seurat object 
+#sobj <- res7_cluster_annot_seurat
+
+
+
+# Extract metadata (colData) as a data frame
+sce_metadata <- as.data.frame(colData(cellsce))
+
+# Ensure the rownames are cell identifiers
+sce_metadata$cell_id <- rownames(sce_metadata)
+
+# Assuming your Seurat object is named 'seurat_obj'
+library(Seurat)
+
+# Extract cell identifiers from Seurat object
+seurat_cell_ids <- colnames(sobj)
+
+# Filter the SCE metadata to include only cells present in the Seurat object
+sce_metadata <- sce_metadata[sce_metadata$cell_id %in% seurat_cell_ids, ]
+
+# Reorder SCE metadata to match the order in the Seurat object
+sce_metadata <- sce_metadata[match(seurat_cell_ids, sce_metadata$cell_id), ]
+
+# Check the columns to ensure they are properly aligned and ordered
+head(sce_metadata)
+
+# Adding metadata to the Seurat object
+# Exclude the cell_id column if it's present
+sobj <- AddMetaData(sobj, metadata = sce_metadata[, -which(names(sce_metadata) == "cell_id")])
+
+library(Seurat)
+
+# Plotting doublet scores on UMAP
+FeaturePlot(sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
+
+FeaturePlot(sobj, features = c("scds_hybrid_score"), reduction = "umap") 
+
+VlnPlot(sobj,features = "decontX_contamination")
+
+```
+```{r}
+sobj <- subset(sobj, decontX_contamination < 0.5)
+```
+
+
+```{r}
+###Regress out %ribosomal genes 
+sobj[["percent.rpl"]] <- PercentageFeatureSet(sobj, features = RPL.genes)
+sobj[["percent.rps"]] <- PercentageFeatureSet(sobj, features = RPS.genes)
+sobj[["percent.rb"]] <- PercentageFeatureSet(sobj, features = c(RPL.genes,RPS.genes))
+
+VlnPlot(sobj,features = "percent.rb")
+```
+
+
+```{r}
+#regress out %mt and %rb 
+
+#sobj <- SCTransform(sobj, vars.to.regress = c("mitoRatio","percent.rpl","percent.rps"), assay = "decontXcounts")
+sobj <- SCTransform(sobj, vars.to.regress = "mitoRatio", assay = "decontXcounts")
+#Reduce dimensionality 
+sobj <- RunPCA(object = sobj)
+#Plot elbow plot to determine appropriate number of dimensions to use in downstream analysis 
+ElbowPlot(sobj)
+```
+```{r}
+set.seed(123456)
+
+# Run UMAP
+sobj <- RunUMAP(sobj, 
+                      dims = 1:17,
+                      reduction = "pca")
+
+# Plot UMAP                             
+#DimPlot(sobj, group.by = "Differentiation") 
+
+sobj <- FindNeighbors(object = sobj, 
+                            dims = 1:17)
+sobj <- FindClusters(object = sobj,
+                           resolution = c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
+
+Idents(object = sobj) <- "SCT_snn_res.0.7"
+# Plot the UMAP
+DimPlot(sobj,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4)
+
+```
+
+```{r}
+
+FeaturePlot(sobj, features = "percent.rps", reduction = "umap") 
+```
+```{r}
+FeaturePlot(sobj, features = "decontX_contamination")
+```
+```{r}
+
+# Read the markers CSV file
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers_layers.csv")
+
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+# Replace "PV" with "PVALB"
+markers$Gene[markers$Gene == "PV"] <- "PVALB"
+
+# Create a list to store the plots
+plot_list <- list()
+
+# Loop through unique cell types
+for (cell in unique(markers$Cell.type)) {
+
+  # Filter the markers for the current cell type
+  cell_markers <- markers$Gene[markers$Cell.type == cell]
+
+  # Create the DotPlot for the current cell type
+  plot <- DotPlot(sobj, features = cell_markers) + 
+    RotatedAxis() +
+    ggtitle(paste(cell, "Canonical Markers"))
+  
+  # Store the plot in the list
+  plot_list[[cell]] <- plot
+  
+  # Optionally, display the plot
+  print(plot)
+}
+
+```
+
+
+#regressing out combined ribo score 
+```{r}
+sobj <- SCTransform(sobj, vars.to.regress = c("mitoRatio","percent.rb"), assay = "decontXcounts")
+#Reduce dimensionality 
+sobj <- RunPCA(object = sobj)
+#Plot elbow plot to determine appropriate number of dimensions to use in downstream analysis 
+ElbowPlot(sobj)
+
+set.seed(123456)
+
+# Run UMAP
+sobj <- RunUMAP(sobj, 
+                      dims = 1:17,
+                      reduction = "pca")
+
+# Plot UMAP                             
+#DimPlot(sobj, group.by = "Differentiation") 
+
+sobj <- FindNeighbors(object = sobj, 
+                            dims = 1:17)
+sobj <- FindClusters(object = sobj,
+                           resolution = c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
+
+Idents(object = sobj) <- "SCT_snn_res.0.8"
+# Plot the UMAP
+DimPlot(sobj,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4)
+```
+```{r}
+FeaturePlot(sobj, features = c("scDblFinder"), reduction = "umap") 
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+saveRDS(sobj,"rbreg_sctkmeta_seurat.rds")
+sobj <- readRDS("rbreg_sctkmeta_seurat.rds")
+# Create a list to store the plots
+plot_list_2 <- list()
+
+# Loop through unique cell types
+for (cell in unique(markers$Cell.type)) {
+
+  # Filter the markers for the current cell type
+  cell_markers <- markers$Gene[markers$Cell.type == cell]
+
+  # Create the DotPlot for the current cell type
+  plot <- DotPlot(sobj, features = cell_markers) + 
+    RotatedAxis() +
+    ggtitle(paste(cell, "Canonical Markers"))
+  
+  # Store the plot in the list
+  plot_list_2[[cell]] <- plot
+  
+  # Optionally, display the plot
+  print(plot)
+}
+```
+
+```{r}
+# Create a list to store the plots
+plot_list_2 <- list()
+
+# Loop through unique cell types
+for (cell in unique(markers$Cell.type)) {
+
+  # Filter the markers for the current cell type
+  cell_markers <- markers$Gene[markers$Cell.type == cell]
+
+  # Create the DotPlot for the current cell type
+  plot <- FeaturePlot(sobj, features = cell_markers) 
+  
+  # Store the plot in the list
+  plot_list_2[[cell]] <- plot
+  
+  # Optionally, display the plot
+  print(plot)
+}
+
+FeaturePlot(sobj,"RPL18A")
+```
+
+
+
+
+
+```{r}
+FeaturePlot(sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
+```
+
+```{r}
+all_markers <- FindAllMarkers(sobj,only.pos = TRUE) 
+#1,19,5,21,18
+all_markers_1 <- subset(all_markers, cluster == 1)
+DotPlot(sobj,features = all_markers_18$gene[1:5])
+all_markers_19 <- subset(all_markers, cluster == 19)
+all_markers_5 <- subset(all_markers, cluster == 5)
+all_markers_21 <- subset(all_markers, cluster == 21)
+all_markers_18 <- subset(all_markers, cluster == 18)
+    
+all_markers <- subset(all_markers,p_val_adj < 0.05)
+
+write.csv(rb_canon_markers,"rb_canon_markers.csv")
+
+de_18_glial <- FindMarkers(sobj,ident.1 = 18, ident.2 = c(20,9,22,3,4,10,15),only.pos = TRUE)
+
+de_18_glial <- de_18_glial %>%
+  mutate("gene" = rownames(de_18_glial))
+
+de_18_glial_canon <- de_18_glial %>%
+  inner_join(markers, by = c("gene" = "Gene"))%>%
+  subset(p_val_adj < 0.05)
+
+DotPlot(sobj,features = de_18_glial_canon$gene)
+```
+
+```{r}
+
+```
+
+
+
+
+```{r}
+# Fetch data and count cells per cluster by Differentiation
+n_cells <- FetchData(sobj, vars = c("Differentiation", 'Chr_Num')) %>%
+  mutate(cluster = Idents(sobj)) %>%
+  dplyr::count(cluster, Differentiation)
+
+# Stacked bar plot of number of cells per cluster by Differentiation
+ggplot(n_cells, aes(x = cluster, y = n, fill = Differentiation)) +
+  geom_bar(position = "stack", stat = "identity") +
+  #geom_text(aes(label = n), vjust = 1.5, position = position_stack(vjust = 0.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate labels by 45 degrees
+  xlab("Cluster") + 
+  ylab("Number of Cells") + 
+  ggtitle("Number of Cells per Cluster by Line")
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+#preliminary cluster annotation 
+rb_annot <- read.csv("rb_clust_annot.csv")
+new.cluster.ids <- rb_annot$I
+names(new.cluster.ids) <- levels(sobj)
+sobj <- RenameIdents(sobj, new.cluster.ids)
+DimPlot(sobj, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
+
+#COL1A2
+
+FeaturePlot(sobj, features = "COL1A2")
+DotPlot(sobj, features = "COL1A2")
+```
+
+```{r}
+FeaturePlot(sobj,"EOMES")
+```
+
+```{r}
+###Feature plots for ribosomal genes too 
+
+RPS.genes <- grep(pattern = "^RPS", x = rownames(sobj), value = TRUE)
+#percent.RPS <- Matrix::colSums(Mgcoculture@raw.data[RPS.genes, ])/Matrix::colSums(Mgcoculture@raw.data)
+#Mgcoculture <- AddMetaData(object = Mgcoculture, metadata = percent.RPS, col.name = "percent.RPS")
+RPL.genes <- grep(pattern = "^RPL", x = rownames(sobj), value = TRUE)
+#percent.RPL <- Matrix::colSums(Mgcoculture@raw.data[RPL.genes, ])/Matrix::colSums(Mgcoculture@raw.data)
+#Mgcoculture <- AddMetaData(object = Mgcoculture, metadata = percent.RPL, col.name = "percent.RPL")
+
+
+FeaturePlot(sobj, features = RPS.genes[11:20], reduction = "umap") 
+```
+###Filter out Ribosomal Genes completely 
+
+```{r}
+norb_sobj <- subset(sobj, features = setdiff(rownames(sobj), c(RPL.genes,RPS.genes)))
+
+norb_sobj <- SCTransform(norb_sobj, vars.to.regress = "mitoRatio", assay = "decontXcounts")
+#Reduce dimensionality 
+norb_sobj <- RunPCA(object = norb_sobj)
+#Plot elbow plot to determine appropriate number of dimensions to use in downstream analysis 
+ElbowPlot(norb_sobj)
+
+set.seed(123456)
+
+# Run UMAP
+norb_sobj <- RunUMAP(norb_sobj, 
+                      dims = 1:17,
+                      reduction = "pca")
+
+# Plot UMAP                             
+#DimPlot(sobj, group.by = "Differentiation") 
+
+norb_sobj <- FindNeighbors(object = norb_sobj, 
+                            dims = 1:17)
+norb_sobj <- FindClusters(object = norb_sobj,
+                           resolution = c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
+
+Idents(object = norb_sobj) <- "SCT_snn_res.0.8"
+# Plot the UMAP
+DimPlot(norb_sobj,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4)
+
+norb_all_markers <- FindAllMarkers(sobj,only.pos = TRUE)
+```
+```{r}
+FeaturePlot(norb_sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
+```
+```{r}
+# Fetch data and count cells per cluster by Differentiation
+n_cells <- FetchData(sobj, vars = c("Differentiation", 'Chr_Num')) %>%
+  mutate(cluster = Idents(sobj)) %>%
+  dplyr::count(cluster, Differentiation)
+
+# Stacked bar plot of number of cells per cluster by Differentiation
+ggplot(n_cells, aes(x = cluster, y = n, fill = Differentiation)) +
+  geom_bar(position = "stack", stat = "identity") +
+  #geom_text(aes(label = n), vjust = 1.5, position = position_stack(vjust = 0.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate labels by 45 degrees
+  xlab("Cluster") + 
+  ylab("Number of Cells") + 
+  ggtitle("Number of Cells per Cluster by Line")
+```
+```{r}
+
+FeaturePlot(norb_sobj,features = "decontX_contamination")
+```
+
+
+```{r}
+FeaturePlot(norb_sobj,"EOMES")
+```
+
+```{r}
+FeaturePlot(norb_sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
+```
+
+
+
+
+
+
+
+```{r}
+library(ggplot2) # Make sure ggplot2 is loaded as your plots likely use ggplot2 objects
+#library(SingleCellExperiment)
+
+# Generate the plots and save them to variables
+runpercellqc.results <- plotRunPerCellQCResults(inSCE = cellsce, sample = sample.vector, combinePlot = "all", axisSize = 8, axisLabelSize = 9, titleSize = 20, labelSamples = TRUE)
+
+scDblFinder.results <- plotScDblFinderResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "all",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+doubletFinderResults <- plotDoubletFinderResults(
+  inSCE = cellsce,
+  sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP",
+  combinePlot = "all",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+cxdsResults <- plotCxdsResults(
+  inSCE = cellsce,
+  sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "all",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+bcdsResults <- plotBcdsResults(
+  inSCE = cellsce,
+  sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "all",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+bcdsCxdsHybridResults <- plotScdsHybridResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "all",
+  titleSize = 13,
+  axisLabelSize = 13,
+  axisSize = 13,
+  legendSize = 13,
+  legendTitleSize = 13
+)
+
+decontxResults <- plotDecontXResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample, 
+  reducedDimName = "UMAP", combinePlot = "all",
+  titleSize = 8,
+  axisLabelSize = 8,
+  axisSize = 10,
+  legendSize = 5,
+  legendTitleSize = 7,
+  relWidths = c(0.5, 1, 1),
+  sampleRelWidths = c(0.5, 1, 1),
+  labelSamples = TRUE,
+  labelClusters = FALSE
+)
+
+soupxResults <- plotSoupXResults(
+  inSCE = cellsce, sample = colData(cellsce)$sample,
+  reducedDimName = "UMAP", combinePlot = "all",
+  titleSize = 8,
+  axisLabelSize = 8,
+  axisSize = 10,
+  legendSize = 5,
+  legendTitleSize = 7,
+  labelClusters = FALSE
+)
+
+# Open a PDF device to save the plots
+```
+
+
+```{r}
+cellsce <- subsetSCECols(cellsce, colData = 'mito_percent < 10')
+
+# Subset the SingleCellExperiment object
+#cellsce_subset <- cellsce[, colData(cellsce)$scDblFinder_doublet_call == "Singlet" & colData(cellsce)$doubletFinder_doublet_label_resolution_1.5 == "Singlet"] 
+cellsce <- subsetSCECols(cellsce, colData = 'decontX_contamination < 0.5')
+  
+###Remove mitochondrial genes and noncoding genes 
+```
+
+###may need to look at MALAT1 expression? could be drop-seq specific though 
+
+```{r}
+#Convert sobj to sce to perform all sctk integration methods 
+seurattosce <- convertSeuratToSCE(sobj)
+```
+
+#Run seurat workflow 
+```{r}
+sce <- runSeuratNormalizeData(inSCE = cellsce, useAssay = "decontXcounts", normAssayName = "seuratNormData", normalizationMethod = "LogNormalize", scaleFactor = 10000)
+```
+
+```{r}
+sce <- runSeuratFindHVG(inSCE = sce, useAssay = "decontXcounts", method = "vst", hvgNumber = 2000, createFeatureSubset = "hvf")
+
+# Print names of top 10 variable features
+print(getTopHVG(inSCE = sce, method = "vst", hvgNumber = 10))
+# Plot variable features with top 10 labeled
+plotSeuratHVG(sce, labelPoints = 10)
+```
+
+##Dimensionality Reduction 
+```{r}
+sce <- runSeuratPCA(inSCE = sce, useAssay = "seuratNormData", reducedDimName = "pca", nPCs = 50, seed = 42, scale = TRUE, useFeatureSubset = "hvf")
+
+# Plot PC1 vs PC2 plot
+plotSeuratReduction(inSCE = sce, useReduction = "pca")
+
+# Plot Elbowplot
+plotSeuratElbow(inSCE = sce)
+
+sce <- runSeuratUMAP(inSCE = sce, useReduction = "pca", reducedDimName = "seuratUMAP", dims = 10, minDist = 0.3, nNeighbors = 30, spread = 1, seed = 42)
+
+
+```
+
+```{r}
+# Plot UMAP
+plotSeuratReduction(sce, "umap")
+```
+
+```{r}
+sce <- runSeuratFindClusters(inSCE = sce, useReduction = "pca", resolution = 0.8, algorithm = "louvain", dims = 20) 
+plotSeuratReduction(sce, "umap", showLegend = TRUE)
+```
+```{r}
+old_annot <- readRDS("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/res7_cluster_annot_seurat.rds")
+
+
+annot <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cluster_annotations.csv")
+new.cluster.ids <- annot$Identity
+names(new.cluster.ids) <- levels(old_annot)
+old_annot<- RenameIdents(old_annot, new.cluster.ids)
+#DimPlot(old_annot, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
+
+old_annot$uninteg_annot <- Idents(old_annot)
+```
+
+```{r}
+integ_seurat <- readRDS("rbreg_sctkmeta_seurat.rds")
+integ_seurat$uninteg_annot <- Idents(old_annot)
+
+integ_seurat <- SCTransform(integ_seurat, vars.to.regress = "mitoRatio", assay = "decontXcounts")
+
+#split integ seurat into separate objects 
+seurat_list <- SplitObject(integ_seurat, split.by = "sample")
+
+#convert each object to sce 
+
+# Initialize an empty list to store SCE objects
+sce_list <- list()
+
+# Convert each Seurat object to SCE
+for (name in names(seurat_list)) {
+  seurat_obj <- seurat_list[[name]]
+  
+  # Convert Seurat object to SingleCellExperiment
+  sce_obj <- as.SingleCellExperiment(seurat_obj, assay = "decontXcounts")
+  
+  # Store the SCE object in the list
+  sce_list[[name]] <- sce_obj
+}
+
+#combine sceobj into one merged one for batch correction
+
+sce_integ <- combineSCE(sce_list, by.r = NULL, by.c = NULL, combined = TRUE)
+
+saveRDS(sce_integ, "sce_integ_sctk.rds")
+```
+#Trying Different Integration Methods 
+
+###BBKNN integration 
+This crashes every time I try to run it 
+```{r}
+runBBKNN(
+  sce_integ,
+  useAssay = "logcounts",
+  batch = "Differentiation",
+  reducedDimName = "BBKNN",
+  nComponents = 50L
+)
+```
+
+
+###ComBatSeq
+```{r}
+sce_integ <- readRDS("sce_integ_sctk.rds")
+
+sce_integ <- runComBatSeq(
+  sce_integ,
+  useAssay = "counts",
+  batch = "Differentiation",
+  covariates = "NULL",
+  bioCond = NULL,
+  useSVA = FALSE,
+  assayName = "ComBatSeq",
+  shrink = FALSE,
+  shrinkDisp = FALSE,
+  nGene = NULL
+)
+```
+###FastMNN
+```{r}
+sce_integ <- runFastMNN(
+  sce_integ,
+  useAssay = "logcounts",
+  useReducedDim = NULL,
+  batch = "Differentiation",
+  reducedDimName = "fastMNN",
+  k = 20,
+  propK = NULL,
+  ndist = 3,
+  minBatchSkip = 0,
+  cosNorm = TRUE,
+  nComponents = 50,
+  weights = NULL,
+  BPPARAM = BiocParallel::SerialParam()
+)
+```
+
+###MNN
+```{r}
+sce_integ <- runMNNCorrect(
+  sce_integ,
+  useAssay = "logcounts",
+  batch = "Differentiation",
+  assayName = "MNN",
+  k = 20L,
+  propK = NULL,
+  sigma = 0.1,
+  cosNormIn = TRUE,
+  cosNormOut = TRUE,
+  varAdj = TRUE,
+  BPPARAM = BiocParallel::SerialParam()
+)
+```
+
+###Liger 
+```{r}
+
+```
+
+###Limma
+```{r}
+sce_integ <- runLimmaBC(sce_integ, useAssay = "logcounts", assayName = "LIMMA", batch = "Differentiation")
+```
+
+###Scanorama
+```{r}
+#not working
+sce_integ <- runSCANORAMA(
+  sce_integ,
+  useAssay = "logcounts",
+  batch = "Differentiation",
+  assayName = "SCANORAMA",
+  SIGMA = 15,
+  ALPHA = 0.1,
+  KNN = 20,
+  approx = TRUE
+)
+
+###scMerge 
+# need to fix 
+sce_integ <- runSCMerge(
+  sce_integ,
+  useAssay = "logcounts",
+  batch = "Differentiation",
+  assayName = "scMerge",
+  hvgExprs = "counts",
+  seg = NULL,
+  kmeansK = NULL,
+  cellType = NULL,
+  BPPARAM = BiocParallel::SerialParam()
+)
+
+###Seurat Integration
+#Run in seurat 
+sce_integ <- runSeuratIntegration(
+  sce_integ,
+  useAssay = "counts",
+  "Differentiation",
+  newAssayName = "SeuratIntegratedAssay",
+  5,
+  200,
+  30,
+  ndims = 10
+)
+
+###ZinBWaVE
+
+sce_integ <- runZINBWaVE(
+  sce_integ,
+useAssay = "counts",
+  batch = "Differentiation",
+  nHVG = 1000L,
+  nComponents = 50L,
+  epsilon = 1000,
+  nIter = 10L,
+  reducedDimName = "zinbwave",
+  BPPARAM = BiocParallel::SerialParam()
+)
+
+sce_integ <- runMNNCorrect(
+  sce_integ,
+  useAssay = "logcounts",
+  batch = "Differentiation",
+  assayName = "MNN",
+  k = 20L,
+  propK = NULL,
+  sigma = 0.1,
+  cosNormIn = TRUE,
+  cosNormOut = TRUE,
+  varAdj = TRUE,
+  BPPARAM = BiocParallel::SerialParam()
+)
+
+saveRDS(sce_integ, "sce_integ_sctk.rds")
+sce_integ <- readRDS("sce_integ_sctk.rds")
+```
+
+
+```{r}
+#Add Assays and reduced dimensions to seurat object 
+# Load necessary libraries
+library(Seurat)
+library(SingleCellExperiment)
+library(Matrix)
+
+# Assume `sce_obj` is your SingleCellExperiment object and `seurat_obj` is your Seurat object
+
+seurat_obj <- readRDS("rbreg_sctkmeta_seurat.rds")
+# Extract and add assays from SCE to Seurat
+#assay_names <- assayNames(sce_integ)
+#for (assay_name in assay_names) {
+  assay_data <- assay(sce_integ, "ComBatSeq")
+  #if (is(assay_data, "sparseMatrix")) {
+  seurat_obj[["ComBatSeq"]] <- CreateAssayObject(counts = assay_data)
+#   } else {
+#     seurat_obj[[assay_name]] <- CreateAssayObject(counts = as(assay_data, "sparseMatrix"))
+#   }
+# }
+
+# # Extract and add reduced dimensions from SCE to Seurat
+# reduced_dim_names <- reducedDimNames(sce_integ)
+# for (dim_name in reduced_dim_names) {
+#   reduced_dim_data <- reducedDim(sce_integ, dim_name)
+#   seurat_obj[[dim_name]] <- CreateDimReducObject(embeddings = reduced_dim_data, key = dim_name)
+# }
+
+# # Verify the assays and reduced dimensions have been added
+# print(Assays(seurat_obj))
+# print(Embeddings(seurat_obj))
+# 
+# # Identify the assays you want to keep
+# assays_to_keep <- setdiff(Assays(seurat_obj), c("counts", "logcounts"))
+# 
+# # Create a new Seurat object retaining only the desired assays
+# seurat_obj <- DietSeurat(seurat_obj, assays = assays_to_keep)
+  
+seurat_obj_subset <- DietSeurat(
+  seurat_obj,
+  assays = c("RNA","decontXcounts","SCT","ComBatSeq"),
+)
+
+seurat_obj <- seurat_obj_subset
+seurat_obj$uninteg_annot <- Idents(old_annot)
+saveRDS(seurat_obj,"integ_sctkmeta_seurat.rds")
+```
+
+
+
+```{r}
+FeaturePlot(seurat_obj,reduction = "umap", "EOMES")
+```
+```{r}
+seurat_obj <- readRDS("integ_sctkmeta_seurat.rds")
+
+saveRDS(seurat_obj,"integ_sctkmeta_seurat.rds")
+```
+
+#Downstream analysis for integration methods that create a new assay 
+```{r}
+set.seed(123456)
+seurat_obj <- SCTransform(seurat_obj, vars.to.regress = "mitoRatio", assay = "decontXcounts")
+
+
+seurat_obj <- seurat_obj %>%
+  NormalizeData(assay = "ComBatSeq") %>%
+  FindVariableFeatures(selection.method = "vst", assay = "ComBatSeq",nfeatures = 2000) %>% 
+  ScaleData(assay = "ComBatSeq") 
+
+seurat_obj <- RunPCA(
+  seurat_obj,
+  assay = "ComBatSeq",reduction.name = "combat_pca"
+)
+
+ElbowPlot(seurat_obj, reduction = "combat_pca")
+
+
+seurat_obj <- RunUMAP(seurat_obj, assay = "ComBatSeq", dims = 1:20, reduction = "combat_pca",reduction.name  = "combat_umap")
+DefaultAssay(seurat_obj) <- "ComBatSeq"
+DimPlot(seurat_obj, reduction = "combat_umap") 
+#SNN analysis for clustering 
+seurat_obj <- FindNeighbors(object = seurat_obj,reduction = "combat_pca")
+#Cluster determination 
+seurat_obj <- FindClusters(object = seurat_obj,resolution =  c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
+
+DimPlot(seurat_obj, reduction = "combat_umap", split.by = "Differentiation") 
+Idents(object = seurat_obj) <- "ComBatSeq_snn_res.0.7"
+# Plot the UMAP
+DimPlot(seurat_obj,
+        reduction = "combat_umap",
+        label = TRUE,
+        label.size = 4)
+```
+
+###Dotplots for each cell type
+```{r}
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers_layers.csv")
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+markers$Gene[markers$Gene == "PV"] <- "PVALB"
+
+plot_list <- list()
+
+# Iterate over each cell type and create a DotPlot
+for (cell in unique(markers$Cell.type)) {
+    marker_genes <- markers$Gene[markers$Cell.type == cell]
+    
+    # Create a DotPlot
+    plot <- DotPlot(seurat_obj, features = marker_genes) + 
+      RotatedAxis() + 
+      ggtitle(paste(cell, "Canonical Markers"))
+    
+    # Add the plot to the list
+    plot_list[[cell]] <- plot
+    print(plot)
+}
+
+
+combat_canon_markers <- combat_allmarkers %>%
+  inner_join(markers, by = c("gene" = "Gene"))%>%
+  subset(p_val_adj < 0.05)
+
+write.csv(combat_canon_markers,"ComBatSeq_all_canonmarkers.csv", row.names = FALSE)
+
+
+```
+
+
+```{r}
+# Fetch data and count cells per cluster by Differentiation
+n_cells <- FetchData(seurat_obj, vars = c("Differentiation", 'sample')) %>%
+  mutate(cluster = Idents(seurat_obj)) %>%
+  dplyr::count(cluster, Differentiation)
+
+# Stacked bar plot of number of cells per cluster by Differentiation
+ggplot(n_cells, aes(x = cluster, y = n, fill = Differentiation)) +
+  geom_bar(position = "stack", stat = "identity") +
+  #geom_text(aes(label = n), vjust = 1.5, position = position_stack(vjust = 0.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate labels by 45 degrees
+  xlab("Cluster") + 
+  ylab("Number of Cells") + 
+  ggtitle("Number of Cells per Cluster by Line")
+
+#Plot old annotations on integrated data 
+Idents(object = seurat_obj) <- "uninteg_annot"
+# Plot the UMAP
+DimPlot(seurat_obj,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4)
+
+
+DefaultAssay(seurat_obj) <- "ComBatSeq"
+#Preliminary Cluster Annotation 
+all_markers <- FindAllMarkers(seurat_obj,only.pos = TRUE)
+#Read in canonical markers list 
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers_layers.csv")
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+markers$Gene[markers$Gene == "PV"] <- "PVALB"
+
+integ_canon_markers <- all_markers %>%
+  inner_join(markers, by = c("gene" = "Gene"))%>%
+  subset(p_val_adj < 0.05)
+
+write.csv(integ_canon_markers,"ComBatSeq_all_canonmarkers.csv", row.names = FALSE)
+```
+```{r}
+
+#remove cluster 22 as it is only coming from one line
+seurat_obj <- subset(seurat_obj, idents = 22,invert = TRUE)
+
+
+integ_annotations <- read.csv("combatseq_annot.csv")
+new.cluster.ids <- integ_annotations$Identity
+names(new.cluster.ids) <- integ_annotations$Cluster
+seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+DimPlot(seurat_obj, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
+```
+```{r}
+#LGE Genes 
+FeaturePlot(seurat_obj, features = c("DLX1","DLX2","ETV1","SP8"),reduction = "combat_umap")
+            
+FeaturePlot(seurat_obj,features = c("TSHZ1", "ARX","ZFHX3","ESRG"),reduction = "combat_umap")
+
+FeaturePlot(seurat_obj,features = c("MEIS2", "PBX1", "SIX3", "VAX1"),reduction = "combat_umap")
+                                     
+FeaturePlot(seurat_obj,features = c("MYRF", "EMX1"),reduction = "combat_umap")  
+
+#MYRF and EMX1
+                                   
+```
+#MGE Markers 
+```{r}
+
+FeaturePlot(seurat_obj, features = list5,reduction = "combat_umap")
+
+list2 <- c("SOX6", "DLX1", "DLX2", "ARX")
+list3 <- c( "MAFB", "ERBB4", "EPHB3","RUNX1T1")
+list4 <- c("MYT1L", "ETV1", "GBX1", "ZIC1")
+list5 <- c("SMARCD3", "LHX1", "MYT1", "ZFHX4")
+
+
+```
+#Save ExN Plot for easier visualization
+```{r}
+# Open a PNG device
+png("combatseq_ExN.png", width = 800, height = 600)
+
+# Generate your plot
+print(plot_list["ExN"])
+
+# Close the device to save the file
+dev.off()
+```
+###Pathway analysis for cluster 13 to help with annotation 
+```{r}
+library(enrichR)
+DEenrichRPlot(
+  seurat_obj,
+  ident.1 = 13,
+  ident.2 = c(1:12,14:21),
+  balanced = TRUE,
+  logfc.threshold = 0.25,
+  max.genes = 200,
+  assay = "ComBatSeq",
+  test.use = "wilcox",
+  p.val.cutoff = 0.05,
+  enrich.database = "Allen_Brain_Atlas_down"
+)
+```
+###Automatic annotation using sctype 
+```{r}
+# load libraries and functions
+lapply(c("dplyr","Seurat","HGNChelper","openxlsx"), library, character.only = T)
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R"); source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
+
+# DB file
+db_ <- "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx";
+tissue <- "Brain" # e.g. Immune system,Pancreas,Liver,Eye,Kidney,Brain,Lung,Adrenal,Heart,Intestine,Muscle,Placenta,Spleen,Stomach,Thymus 
+
+# prepare gene sets
+gs_list <- gene_sets_prepare(db_, tissue)
+
+
+
+# check Seurat object version (scRNA-seq matrix extracted differently in Seurat v4/v5)
+seurat_package_v5 <- isFALSE('counts' %in% names(attributes(seurat_obj[["ComBatSeq"]])));
+print(sprintf("Seurat object %s is used", ifelse(seurat_package_v5, "v5", "v4")))
+
+# extract scaled scComBatSeq-seq matrix
+scRNAseqData_scaled <- if (seurat_package_v5) as.matrix(seurat_obj[["ComBatSeq"]]$scale.data) else as.matrix(seurat_obj[["ComBatSeq"]]@scale.data)
+
+# run ScType
+es.max <- sctype_score(scRNAseqData = scRNAseqData_scaled, scaled = TRUE, gs = gs_list$gs_positive, gs2 = gs_list$gs_negative)
+
+# NOTE: scRNAseqData parameter should correspond to your input scRNA-seq matrix. For raw (unscaled) count matrix set scaled = FALSE
+# When using Seurat, we use "RNA" slot with 'scale.data' by default. Please change "RNA" to "SCT" for sctransform-normalized data,
+# or to "integrated" for joint dataset analysis. To apply sctype with unscaled data, use e.g. seurat_obj[["RNA"]]$counts or seurat_obj[["RNA"]]@counts, with scaled set to FALSE.
+
+# merge by cluster
+cL_resutls <- do.call("rbind", lapply(unique(seurat_obj@meta.data$seurat_clusters), function(cl){
+    es.max.cl = sort(rowSums(es.max[ ,rownames(seurat_obj@meta.data[seurat_obj@meta.data$seurat_clusters==cl, ])]), decreasing = !0)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells = sum(seurat_obj@meta.data$seurat_clusters==cl)), 10)
+}))
+sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)  
+
+# set low-confident (low ScType score) clusters to "unknown"
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] <- "Unknown"
+print(sctype_scores[,1:3])
+```
+
+
+
+
+
+
+
+
+
+
+
+
+###Try combatseq with covariates 
+```{r}
+#subset annotations to only include excitatory neuron annotations since those are what we are most confident about (These are the annotations on the combatseq corrected data, but with only batch = differentiation parameter; no covariates) For this, I will use the OL_subclus column 
+
+#we are not going along with this method as it did not significantly improve our clustering 
+
+annots <- unique(seurat_obj$OL_subclus)
+#select all ExN clusters 
+exn_annots <- annots[grepl("ExN", annots)]
+#remove questionable/potentially transitioning progenitors that we labeled as ExN 
+exn_annots <- exn_annots[exn_annots != "ExN"]
+#remove RELN+ cluster 
+exn_annots <-exn_annots[exn_annots != "RELN+ ExN"]
+
+seurat_obj[["ExN_annot"]] <- seurat_obj$OL_subclus[seurat_obj$OL_subclus %in% exn_annots]
+
+#Add to sce 
+sce_integ$ExN_annot <- seurat_obj$ExN_annot
+
+#Runcombatseq with covariates 
+sce_integ <- runComBatSeq(
+  sce_integ,
+  useAssay = "counts",
+  batch = "Differentiation",
+  covariates = "uninteg_annot",
+  bioCond = NULL,
+  useSVA = FALSE,
+  assayName = "ComBatSeq_cov",
+  shrink = FALSE,
+  shrinkDisp = FALSE,
+  nGene = NULL
+)
+
+#Add ComBAtSeq_cov assay to seurat object 
+assay_data <- assay(sce_integ, "ComBatSeq_cov")
+seurat_obj[["ComBatSeq_cov"]] <- CreateAssayObject(counts = assay_data)
+
+
+
+
+seurat_obj <- seurat_obj %>%
+  NormalizeData(assay = "ComBatSeq_cov") %>%
+  FindVariableFeatures(selection.method = "vst", assay = "ComBatSeq_cov",nfeatures = 2000) %>% 
+  ScaleData(assay = "ComBatSeq_cov") 
+
+seurat_obj <- RunPCA(
+  seurat_obj,
+  assay = "ComBatSeq_cov",reduction.name = "combat_cov_pca"
+)
+
+ElbowPlot(seurat_obj, reduction = "combat_cov_pca")
+
+
+seurat_obj <- RunUMAP(seurat_obj, assay = "ComBatSeq_cov", dims = 1:20, reduction = "combat_cov_pca",reduction.name  = "combat_cov_umap")
+DefaultAssay(seurat_obj) <- "ComBatSeq_cov"
+DimPlot(seurat_obj, reduction = "combat_cov_umap") 
+#SNN analysis for clustering 
+seurat_obj <- FindNeighbors(object = seurat_obj,reduction = "combat_cov_pca")
+#Cluster determination 
+seurat_obj <- FindClusters(object = seurat_obj,resolution =  c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
+
+DimPlot(seurat_obj, reduction = "combat_cov_umap", split.by = "Differentiation") 
+Idents(object = seurat_obj) <- "ComBatSeq_cov_snn_res.0.8"
+# Plot the UMAP
+DimPlot(seurat_obj,
+        reduction = "combat_cov_umap",
+        label = TRUE,
+        label.size = 4)
+
+
+combatcov_allmarkers <- FindAllMarkers(seurat_obj,only.pos = TRUE)
+
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers_layers.csv")
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+markers$Gene[markers$Gene == "PV"] <- "PVALB"
+
+plot_list <- list()
+
+# Iterate over each cell type and create a DotPlot
+for (cell in unique(markers$Cell.type)) {
+    marker_genes <- markers$Gene[markers$Cell.type == cell]
+    
+    # Create a DotPlot
+    plot <- DotPlot(seurat_obj, features = marker_genes) + 
+      RotatedAxis() + 
+      ggtitle(paste(cell, "Canonical Markers"))
+    
+    # Add the plot to the list
+    plot_list[[cell]] <- plot
+    print(plot)
+}
+  
+
+combatcov_canon_markers <- combatcov_allmarkers %>%
+  inner_join(markers, by = c("gene" = "Gene"))%>%
+  subset(p_val_adj < 0.05)
+
+write.csv(combatcov_canon_markers,"combatcov_all_canonmarkers.csv", row.names = FALSE)
+
+
+```
