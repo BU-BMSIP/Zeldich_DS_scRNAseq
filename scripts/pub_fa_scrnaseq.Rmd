@@ -1,0 +1,310 @@
+---
+title: "scrnaseq_zeldichpaper"
+author: "Shreya Nalluri"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Analysis method 
+
+This analysis will be based on the zeldich paper: https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2022.932384/full
+
+```{r}
+# Load packages 
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(patchwork)
+library(SeuratData)
+library(SeuratWrappers)
+library(tidyverse)
+#library(Azimuth)
+library(ggplot2)
+library(sctransform)
+#library(leidenAlg)
+library(leiden)
+library(reticulate)
+library(biomaRt)
+library(decontX)
+library(celda)
+library(SingleCellExperiment)
+#library(singleCellTK)
+```
+###Creating Seurat object and performing preliminary QC 
+```{r}
+datapath_sc = "/projectnb/zeldich/GEX_FA_SN_MS/data/cellranger_counts/scRNA-seq"
+namers_sc = list.dirs(path = datapath_sc, full.names = FALSE, recursive = FALSE)
+DirList_sc = list.dirs(path = datapath_sc, full.names = TRUE, recursive = FALSE)
+##edit for each experiment: identifiers to add to metadata for grouping later
+groupers_sc = dataset <- data.frame(
+  name = c(namers_sc),
+  Sex = c('F','F','M','M','F','F'),
+  Differentiation = c('WC','WC','M','M','ILD','ILD'),
+  Chr_Num = c('eu','tri','eu','tri','eu','tri')
+)
+
+for (i in 1:length(namers_sc)){
+  seurat_data <- Read10X(data.dir = paste(datapath_sc,namers_sc[i],'outs','filtered_feature_bc_matrix',sep="/"))
+  seurat_raw <- Read10X(data.dir = paste(datapath_sc,namers_sc[i],'outs','raw_feature_bc_matrix',sep="/"))
+  seurat_obj <- CreateSeuratObject(counts = seurat_data, 
+                                   min.features = 100, 
+                                   project = namers_sc[i])
+  counts <- GetAssayData(object = seurat_obj, layer = "counts")
+  sce <- SingleCellExperiment(list(counts = counts))
+  sce.raw <- SingleCellExperiment(list(counts = seurat_raw))
+  sce <- decontX(sce, background = sce.raw)
+  # # Open a PNG device
+  # png(paste0(namers_sc[i],".png"), width = 800, height = 600)
+  # 
+  # # Generate your plot
+  # plot(plotDecontXContamination(sce))
+  # 
+  # # Close the device to save the file
+  # dev.off()
+  seurat_obj[["decontXcounts"]] <- CreateAssayObject(counts = decontXcounts(sce))
+  DefaultAssay(seurat_obj) <- "decontXcounts"
+  seurat_obj <- AddMetaData(object = seurat_obj, metadata = groupers_sc[i,1], col.name = 'Sample')
+  seurat_obj <- AddMetaData(object = seurat_obj, metadata = groupers_sc[i,2], col.name = 'Sex')
+  seurat_obj <- AddMetaData(object = seurat_obj, metadata = groupers_sc[i,3], col.name = 'Line')
+  seurat_obj <- AddMetaData(object = seurat_obj, metadata = groupers_sc[i,4], col.name = 'Genotype')
+  
+  seurat_obj$log10GenesPerUMI <- log10(seurat_obj$nFeature_decontXcounts) / log10(seurat_obj$nCount_decontXcounts)
+  seurat_obj$mitoRatio <- PercentageFeatureSet(object = seurat_obj, pattern = "^MT-")
+  seurat_obj$mitoRatio <- seurat_obj@meta.data$mitoRatio / 100
+  metadata <- seurat_obj@meta.data
+  metadata$cells <- rownames(metadata)
+  
+  metadata <- metadata %>%
+    dplyr::rename(seq_folder = orig.ident,
+                  nUMI = nCount_decontXcounts,
+                  nGene = nFeature_decontXcounts)
+  seurat_obj@meta.data <- metadata
+  
+  # Filter out low quality cells using selected thresholds 
+  filtered_seurat_sc <- subset(x = seurat_obj, 
+                               subset= (nUMI >= 350) & 
+                                 (nGene >= 300) & 
+                                 (log10GenesPerUMI > 0.80) & 
+                                 (mitoRatio < 0.10))
+  
+  # Only keeping those genes expressed in more than 10 cells
+  counts <- LayerData(object = filtered_seurat_sc, layer = "counts")
+  
+  # Output a logical matrix specifying for each gene on whether or not there are more than zero counts per cell
+  nonzero <- counts > 0
+  
+  # Sums all TRUE values and returns TRUE if more than 10 TRUE values per gene
+  keep_genes <- Matrix::rowSums(nonzero) >= 10
+  
+  filtered_counts <- counts[keep_genes, ]
+  filtered_seurat_sc <- subset(filtered_seurat_sc, features = rownames(filtered_counts))
+  assign(namers_sc[i], filtered_seurat_sc)
+  
+}
+
+merged_seurat <- merge(x = ZE_CN_sc11WCE, 
+                       y = c(ZE_CN_sc12WCT, ZE_CN_sc13ME,ZE_CN_sc14MT,ZE_CN_sc15ILDE, ZE_CN_sc16ILDT),
+                       add.cell.id = namers_sc)
+saveRDS(merged_seurat,"fa_scrnaseq_seurat_filtered.rds")
+```
+
+###Cell Cycle Analysis
+Determine whether regressing out differences in cell cycle is necessary 
+```{r}
+# Normalize the counts
+seurat_phase <- JoinLayers(filtered_seurat)
+# Normalize the counts
+seurat_phase <- NormalizeData(seurat_phase)
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seurat_phase <- CellCycleScoring(seurat_phase, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+# Identify the most variable genes
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                     selection.method = "vst",
+                     nfeatures = 2000, 
+                     verbose = FALSE)
+		     
+# Scale the counts
+seurat_phase <- ScaleData(seurat_phase)
+
+# Identify the 15 most highly variable genes
+ranked_variable_genes <- VariableFeatures(seurat_phase)
+top_genes <- ranked_variable_genes[1:15]
+
+# Plot the average expression and variance of these genes
+# With labels to indicate which genes are in the top 15
+p <- VariableFeaturePlot(seurat_phase)
+LabelPoints(plot = p, points = top_genes, repel = TRUE)
+
+# Perform PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+# Plot the PCA colored by cell cycle phase
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "Phase")
+```
+
+##Remove mitochondrial genes 
+```{r}
+mito_genes <- grep("^MT-", rownames(filtered_seurat), value = TRUE)
+filtered_seurat <- subset(filtered_seurat, features = setdiff(rownames(filtered_seurat), mito_genes))
+```
+
+##Remove non-protein coding genes 
+```{r}
+# Identify protein coding genes 
+# Initialize biomaRt
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Retrieve protein-coding genes
+protein_coding_genes <- getBM(attributes = c("hgnc_symbol"), 
+                              filters = "biotype", 
+                              values = "protein_coding", 
+                              mart = ensembl)$hgnc_symbol
+filtered_seurat <- subset(filtered_seurat, features = intersect(rownames(filtered_seurat), protein_coding_genes))%>%
+  subset(percent.mt < 10) 
+
+saveRDS(filtered_seurat,"/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/fa_scrnaseq_seurat_filtered.rds")
+```
+
+##Normalize and scale using sctransform 
+```{r}
+#only regressing out %mt as previous analysis determined regressing out cell cycle differences unnecessary
+seurat_sct <- SCTransform(filtered_seurat, vars.to.regress = "percent.mt", assay = "RNA")
+```
+###Preliminary Clustering 
+```{r}
+#Reduce dimensionality 
+seurat_sct <- RunPCA(object = seurat_sct)
+#Plot elbow plot to determine appropriate number of dimensions to use in downstream analysis 
+ElbowPlot(seurat_sct)
+```
+
+```{r}
+# Set seed for reproducibility 
+set.seed(123456)
+
+# Run UMAP
+seurat_sct <- RunUMAP(seurat_sct, 
+                             dims = 1:17,
+			     reduction = "pca")
+
+# Plot UMAP                             
+DimPlot(seurat_sct, group.by = "line") 
+```
+
+```{r}
+# Explore heatmap of PCs
+DimHeatmap(seurat_sct, 
+           dims = 1:9, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+```{r}
+#SNN analysis for clustering 
+seurat_sct <- FindNeighbors(object = seurat_sct, 
+                                dims = 1:17)
+#Cluster determination 
+seurat_sct <- FindClusters(object = seurat_sct,
+                               resolution = c(0.2,0.3,0.4,0.5,0.6))
+```
+
+```{r}
+#Set cluster resolution we want to plot 
+Idents(object = seurat_sct) <- "SCT_snn_res.0.3"
+# Plot the UMAP
+DimPlot(seurat_sct,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4)
+```
+
+```{r}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells <- FetchData(seurat_sct, 
+                     vars = c("ident", "Sample")) %>%
+        dplyr::count(ident, Sample)
+
+# Barplot of number of cells per cluster by sample
+ggplot(n_cells, aes(x=ident, y=n, fill=Sample)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_text(aes(label=n), vjust = -.2, position=position_dodge(1)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate labels by 45 degrees
+```
+
+```{r}
+ggplot(seurat_sct@meta.data) +
+    geom_bar(aes(x=SCT_snn_res.0.3, fill=line), position=position_fill()) 
+```
+
+```{r}
+# UMAP of cells in each cluster by sample
+DimPlot(seurat_sct, 
+        label = TRUE, 
+        split.by = "Genotype")  + NoLegend()
+DimPlot(seurat_sct, 
+        label = TRUE, 
+        split.by = "line")  + NoLegend()
+```
+
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nUMI", "nGene", "percent.mt")
+
+FeaturePlot(seurat_sct, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+
+```{r}
+# Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nUMI", "nGene", "percent.mt")
+
+FeaturePlot(seurat_sct, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+```{r}
+#Create metrics for cell type annotation
+#read in canonical markers list
+markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_markers.csv")
+# Convert gene names to uppercase
+markers$Gene <- toupper(markers$Gene)
+
+marker_lists <- split(markers$Gene, markers$Cell.type)
+FeaturePlot(seurat_sct, 
+            reduction = "umap", 
+            features =  marker_lists[["pre-OPC"]],
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+###Preliminary Cluster Annotations 
+```{r}
+annotations <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cluster_annotations.csv")
+new.cluster.ids <- annotations$Identity
+names(new.cluster.ids) <- levels(seurat_sct)
+seurat_sct <- RenameIdents(seurat_sct, new.cluster.ids)
+DimPlot(seurat_sct, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
+```
+
+Although annotation was attempted, it is clear decontamination and doublet detection is necessary. Will perform using sctk. 
