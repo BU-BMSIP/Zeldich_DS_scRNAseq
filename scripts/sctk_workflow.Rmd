@@ -26,10 +26,9 @@ library(sctransform)
 library(biomaRt)
 #library(decontX)
 library(singleCellTK)
-
+library(EnhancedVolcano)
 selectSCTKVirtualEnvironment("sctk-reticulate")
 ```
-
 
 ###Read in data for singleCellTK
 ```{r pressure, echo=FALSE}
@@ -60,70 +59,29 @@ cellsce <- runUMAP(
   nTop = 2000,
   seed = NULL
 )
-
-# TSNE (not run):
-# pbmc <- getTSNE(inSCE=pbmc, useAssay="counts", logNorm = TRUE, sample = colData(pbmc)$sample)
-```
-```{r}
-###Add gene id column to convert ensembl ids 
-# Load required libraries
-library(SingleCellExperiment)
-library(biomaRt)
-library(dplyr)
-library(ensembldb)
-library(EnsDb.Hsapiens.v86)
- # Load human genes database (version may differ)
-# Load the necessary library
-
-# Retrieve mitochondrial genes
-mito_gns <- genes(EnsDb.Hsapiens.v86, filter = ~ seq_name == "MT")
-
-# Extract the gene IDs
-gene_ids <- mito_gns$gene_id
-
-# Create a named list where names are gene IDs
-named_gene_ids <- setNames(as.list(gene_ids), gene_ids)
-
-# Check the result
-print(named_gene_ids)
-
-
 ```
 
 ```{r}
-# cellsce <- importGeneSetsFromGMT(inSCE = cellsce, collectionName = "mito", file = system.file("extdata/mito_subset.gmt", package = "singleCellTK"))
-
-# importGeneSetsFromList(
-#   inSCE = cellsce,
-#   geneSetList = named_gene_ids,
-#   collectionName = "mito",
-#   by = "rownames"
-# )
-
+#Run cell QC metrics, doublet detection, and decontamination 
 set.seed(12345)
 cellsce  <- runCellQC(cellsce ,
                            algorithms = c("QCMetrics","scDblFinder","cxds","bcds", "cxds_bcds_hybrid", "doubletFinder", "decontX", "soupX"),
                            mitoRef = "human", mitoIDType = "ensembl", mitoGeneLocation = "rownames")
 saveRDS(cellsce,"merge_sctk_sceobj.rds")
 
+#cellsce <- readRDS("merge_sctk_sceobj.rds")
+
 ```
-```{r}
-cellsce <- readRDS("merge_sctk_sceobj.rds")
-```
 
-
-
-
-
-##QC summary stats
+##cell QC summary stats
 ```{r}
 cellsce <- sampleSummaryStats(cellsce, sample = sample.vector, simple = FALSE)
 getSampleSummaryStatsTable(cellsce, statsName = "qc_table")
-
 ```
 
-
+###Plot doublet detection results 
 ```{r}
+#Plot doublet detection results 
 runpercellqc.results <- plotRunPerCellQCResults(inSCE = cellsce, sample = sample.vector, combinePlot = "all", axisSize = 8, axisLabelSize = 9, titleSize = 20, labelSamples=TRUE)
 
 scDblFinder.results <- plotScDblFinderResults(
@@ -206,20 +164,15 @@ soupxResults <- plotSoupXResults(
 )
 
 ```
+###Add sctk qc data to seurat object 
 ```{r}
-###Add doublet data to seurat object 
-#sobj <- res7_cluster_annot_seurat
-
-
-
+###Add sctk qc data to seurat object 
+sobj <- readRDS("")
 # Extract metadata (colData) as a data frame
 sce_metadata <- as.data.frame(colData(cellsce))
 
 # Ensure the rownames are cell identifiers
 sce_metadata$cell_id <- rownames(sce_metadata)
-
-# Assuming your Seurat object is named 'seurat_obj'
-library(Seurat)
 
 # Extract cell identifiers from Seurat object
 seurat_cell_ids <- colnames(sobj)
@@ -233,24 +186,20 @@ sce_metadata <- sce_metadata[match(seurat_cell_ids, sce_metadata$cell_id), ]
 # Check the columns to ensure they are properly aligned and ordered
 head(sce_metadata)
 
-# Adding metadata to the Seurat object
+# Add metadata to the Seurat object
 # Exclude the cell_id column if it's present
 sobj <- AddMetaData(sobj, metadata = sce_metadata[, -which(names(sce_metadata) == "cell_id")])
 
-library(Seurat)
 
 # Plotting doublet scores on UMAP
 FeaturePlot(sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
 
-FeaturePlot(sobj, features = c("scds_hybrid_score"), reduction = "umap") 
-
 VlnPlot(sobj,features = "decontX_contamination")
-
-```
-```{r}
+#filter out cells with high contamination scores 
 sobj <- subset(sobj, decontX_contamination < 0.5)
 ```
-
+###Ribosomal protein gene analysis 
+Originally there was some speculation that some of the clustering was driven by expression of ribosomal protein genes. The following analysis explores this, but we determined this was not the case, and did not continue with any sort of manipulation (regression/filtering) of ribosomal protein genes 
 
 ```{r}
 ###Regress out %ribosomal genes 
@@ -372,17 +321,7 @@ DimPlot(sobj,
 ```{r}
 FeaturePlot(sobj, features = c("scDblFinder"), reduction = "umap") 
 ```
-
-
-
-
-
-
-
-
-
-
-
+###Dotplots for canonical markers 
 ```{r}
 
 saveRDS(sobj,"rbreg_sctkmeta_seurat.rds")
@@ -408,33 +347,6 @@ for (cell in unique(markers$Cell.type)) {
   print(plot)
 }
 ```
-
-```{r}
-# Create a list to store the plots
-plot_list_2 <- list()
-
-# Loop through unique cell types
-for (cell in unique(markers$Cell.type)) {
-
-  # Filter the markers for the current cell type
-  cell_markers <- markers$Gene[markers$Cell.type == cell]
-
-  # Create the DotPlot for the current cell type
-  plot <- FeaturePlot(sobj, features = cell_markers) 
-  
-  # Store the plot in the list
-  plot_list_2[[cell]] <- plot
-  
-  # Optionally, display the plot
-  print(plot)
-}
-
-FeaturePlot(sobj,"RPL18A")
-```
-
-
-
-
 
 ```{r}
 FeaturePlot(sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
@@ -467,13 +379,6 @@ DotPlot(sobj,features = de_18_glial_canon$gene)
 ```
 
 ```{r}
-
-```
-
-
-
-
-```{r}
 # Fetch data and count cells per cluster by Differentiation
 n_cells <- FetchData(sobj, vars = c("Differentiation", 'Chr_Num')) %>%
   mutate(cluster = Idents(sobj)) %>%
@@ -491,13 +396,6 @@ ggplot(n_cells, aes(x = cluster, y = n, fill = Differentiation)) +
 
 
 ```
-
-
-
-
-
-
-
 ```{r}
 #preliminary cluster annotation 
 rb_annot <- read.csv("rb_clust_annot.csv")
@@ -596,12 +494,6 @@ FeaturePlot(norb_sobj,"EOMES")
 FeaturePlot(norb_sobj, features = c("scDblFinder_doublet_score","scDblFinder_cxds_score","doubletFinder_doublet_score_resolution_1.5","scds_cxds_score","scds_bcds_score","scds_hybrid_score"), reduction = "umap") 
 ```
 
-
-
-
-
-
-
 ```{r}
 library(ggplot2) # Make sure ggplot2 is loaded as your plots likely use ggplot2 objects
 #library(SingleCellExperiment)
@@ -691,77 +583,24 @@ soupxResults <- plotSoupXResults(
 # Open a PDF device to save the plots
 ```
 
-
+###Trying different integration methods using sctk 
+Many different integration methods were tested, ultimately we chose to use ComBatSeq, without any additional covariates 
 ```{r}
-cellsce <- subsetSCECols(cellsce, colData = 'mito_percent < 10')
+old_annot <- readRDS("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/res7_cluster_annot_seurat.rds") ##This object does not have sctk qc results 
 
-# Subset the SingleCellExperiment object
-#cellsce_subset <- cellsce[, colData(cellsce)$scDblFinder_doublet_call == "Singlet" & colData(cellsce)$doubletFinder_doublet_label_resolution_1.5 == "Singlet"] 
-cellsce <- subsetSCECols(cellsce, colData = 'decontX_contamination < 0.5')
-  
-###Remove mitochondrial genes and noncoding genes 
-```
-
-###may need to look at MALAT1 expression? could be drop-seq specific though 
-
-```{r}
-#Convert sobj to sce to perform all sctk integration methods 
-seurattosce <- convertSeuratToSCE(sobj)
-```
-
-#Run seurat workflow 
-```{r}
-sce <- runSeuratNormalizeData(inSCE = cellsce, useAssay = "decontXcounts", normAssayName = "seuratNormData", normalizationMethod = "LogNormalize", scaleFactor = 10000)
-```
-
-```{r}
-sce <- runSeuratFindHVG(inSCE = sce, useAssay = "decontXcounts", method = "vst", hvgNumber = 2000, createFeatureSubset = "hvf")
-
-# Print names of top 10 variable features
-print(getTopHVG(inSCE = sce, method = "vst", hvgNumber = 10))
-# Plot variable features with top 10 labeled
-plotSeuratHVG(sce, labelPoints = 10)
-```
-
-##Dimensionality Reduction 
-```{r}
-sce <- runSeuratPCA(inSCE = sce, useAssay = "seuratNormData", reducedDimName = "pca", nPCs = 50, seed = 42, scale = TRUE, useFeatureSubset = "hvf")
-
-# Plot PC1 vs PC2 plot
-plotSeuratReduction(inSCE = sce, useReduction = "pca")
-
-# Plot Elbowplot
-plotSeuratElbow(inSCE = sce)
-
-sce <- runSeuratUMAP(inSCE = sce, useReduction = "pca", reducedDimName = "seuratUMAP", dims = 10, minDist = 0.3, nNeighbors = 30, spread = 1, seed = 42)
-
-
-```
-
-```{r}
-# Plot UMAP
-plotSeuratReduction(sce, "umap")
-```
-
-```{r}
-sce <- runSeuratFindClusters(inSCE = sce, useReduction = "pca", resolution = 0.8, algorithm = "louvain", dims = 20) 
-plotSeuratReduction(sce, "umap", showLegend = TRUE)
-```
-```{r}
-old_annot <- readRDS("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/res7_cluster_annot_seurat.rds")
-
-
+#Add unintegrated annotations to seurat object 
 annot <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cluster_annotations.csv")
 new.cluster.ids <- annot$Identity
 names(new.cluster.ids) <- levels(old_annot)
 old_annot<- RenameIdents(old_annot, new.cluster.ids)
-#DimPlot(old_annot, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
 
+#extract unintegrated annotations 
 old_annot$uninteg_annot <- Idents(old_annot)
 ```
 
 ```{r}
 integ_seurat <- readRDS("rbreg_sctkmeta_seurat.rds")
+#Add unintegrated annotations to seurat object that also has the sctk qc results 
 integ_seurat$uninteg_annot <- Idents(old_annot)
 
 integ_seurat <- SCTransform(integ_seurat, vars.to.regress = "mitoRatio", assay = "decontXcounts")
@@ -785,7 +624,7 @@ for (name in names(seurat_list)) {
   sce_list[[name]] <- sce_obj
 }
 
-#combine sceobj into one merged one for batch correction
+#combine sceobj into one merged object for batch correction
 
 sce_integ <- combineSCE(sce_list, by.r = NULL, by.c = NULL, combined = TRUE)
 
@@ -859,10 +698,6 @@ sce_integ <- runMNNCorrect(
 )
 ```
 
-###Liger 
-```{r}
-
-```
 
 ###Limma
 ```{r}
@@ -898,7 +733,7 @@ sce_integ <- runSCMerge(
 )
 
 ###Seurat Integration
-#Run in seurat 
+
 sce_integ <- runSeuratIntegration(
   sce_integ,
   useAssay = "counts",
@@ -924,6 +759,7 @@ useAssay = "counts",
   BPPARAM = BiocParallel::SerialParam()
 )
 
+###MNN 
 sce_integ <- runMNNCorrect(
   sce_integ,
   useAssay = "logcounts",
@@ -944,7 +780,7 @@ sce_integ <- readRDS("sce_integ_sctk.rds")
 
 
 ```{r}
-#Add Assays and reduced dimensions to seurat object 
+#Add Assays and reduced dimensions from sce object to seurat object 
 # Load necessary libraries
 library(Seurat)
 library(SingleCellExperiment)
@@ -996,8 +832,9 @@ saveRDS(seurat_obj,"integ_sctkmeta_seurat.rds")
 ```{r}
 FeaturePlot(seurat_obj,reduction = "umap", "EOMES")
 ```
+
 ```{r}
-seurat_obj <- readRDS("integ_sctkmeta_seurat.rds")
+seurat_obj <- readRDS("/projectnb/zeldich/FA_scRNAseq_SN_MS/data/seurat_objects/integ_sctkmeta_seurat.rds")
 
 saveRDS(seurat_obj,"integ_sctkmeta_seurat.rds")
 ```
@@ -1037,6 +874,11 @@ DimPlot(seurat_obj,
         label = TRUE,
         label.size = 4)
 ```
+```{r}
+degs_2 <- FindMarkers(seurat_obj,ident.1 = "eu",ident.2="tri", subset.ident = "2")
+
+
+```
 
 ###Dotplots for each cell type
 ```{r}
@@ -1072,7 +914,6 @@ write.csv(combat_canon_markers,"ComBatSeq_all_canonmarkers.csv", row.names = FAL
 
 ```
 
-
 ```{r}
 # Fetch data and count cells per cluster by Differentiation
 n_cells <- FetchData(seurat_obj, vars = c("Differentiation", 'sample')) %>%
@@ -1105,6 +946,20 @@ markers <- read.csv("/projectnb/zeldich/GEX_FA_SN_MS/Zeldich_multiome/cell_marke
 # Convert gene names to uppercase
 markers$Gene <- toupper(markers$Gene)
 
+cluster13_markers <- all_markers%>%
+  subset(cluster == 13)%>%
+  head(25)
+
+# Open a PNG device
+png("combatseq_cluster13.png", width = 1000, height = 600)
+
+# Generate your plot
+DotPlot(seurat_obj,cluster13_markers$gene) + RotatedAxis() 
+
+# Close the device to save the file
+dev.off()
+
+
 markers$Gene[markers$Gene == "PV"] <- "PVALB"
 
 integ_canon_markers <- all_markers %>%
@@ -1123,8 +978,10 @@ integ_annotations <- read.csv("combatseq_annot.csv")
 new.cluster.ids <- integ_annotations$Identity
 names(new.cluster.ids) <- integ_annotations$Cluster
 seurat_obj <- RenameIdents(seurat_obj, new.cluster.ids)
+seurat_obj$EZ_annot <- Idents(seurat_obj)
 DimPlot(seurat_obj, reduction = "umap", label = TRUE, pt.size = 0.5) #+ NoLegend()
 ```
+
 ```{r}
 #LGE Genes 
 FeaturePlot(seurat_obj, features = c("DLX1","DLX2","ETV1","SP8"),reduction = "combat_umap")
@@ -1136,8 +993,26 @@ FeaturePlot(seurat_obj,features = c("MEIS2", "PBX1", "SIX3", "VAX1"),reduction =
 FeaturePlot(seurat_obj,features = c("MYRF", "EMX1"),reduction = "combat_umap")  
 
 #MYRF and EMX1
+
+DotPlot(seurat_obj,features = c("GSX2","EMX1","NKX2-1"))
+DotPlot(seurat_obj,features = c("DLX1","DLX2","ETV1","SP8","TSHZ1", "ARX","ZFHX3","ESRG","MEIS2", "PBX1", "SIX3", "VAX1","MYRF", "EMX1")) + RotatedAxis()
+
+png("combatseq_cluster13.png", width = 1000, height = 600)
+
+# Generate your plot
+DotPlot(seurat_obj,cluster13_markers$gene) + RotatedAxis() 
+
+# Close the device to save the file
+dev.off()
+
                                    
 ```
+
+```{r}
+DotPlot(seurat_obj,features = c("SOX6", "DLX1", "DLX2", "ARX","MAFB", "ERBB4", "EPHB3","RUNX1T1","MYT1L", "ETV1", "GBX1", "ZIC1","SMARCD3", "LHX1", "MYT1", "ZFHX4")) + RotatedAxis()
+
+```
+
 #MGE Markers 
 ```{r}
 
@@ -1150,6 +1025,7 @@ list5 <- c("SMARCD3", "LHX1", "MYT1", "ZFHX4")
 
 
 ```
+
 #Save ExN Plot for easier visualization
 ```{r}
 # Open a PNG device
@@ -1161,7 +1037,9 @@ print(plot_list["ExN"])
 # Close the device to save the file
 dev.off()
 ```
-###Pathway analysis for cluster 13 to help with annotation 
+###Investigating Cluster 13 to help with annotation
+
+###Pathway analysis
 ```{r}
 library(enrichR)
 DEenrichRPlot(
@@ -1191,7 +1069,6 @@ tissue <- "Brain" # e.g. Immune system,Pancreas,Liver,Eye,Kidney,Brain,Lung,Adre
 gs_list <- gene_sets_prepare(db_, tissue)
 
 
-
 # check Seurat object version (scRNA-seq matrix extracted differently in Seurat v4/v5)
 seurat_package_v5 <- isFALSE('counts' %in% names(attributes(seurat_obj[["ComBatSeq"]])));
 print(sprintf("Seurat object %s is used", ifelse(seurat_package_v5, "v5", "v4")))
@@ -1218,11 +1095,247 @@ sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_score
 print(sctype_scores[,1:3])
 ```
 
+###DEGS 
+```{r}
+#Will perform at the single cell level and pseudobulk level and compare 
+
+#single cell deg 
+seurat_obj$celltype.geno <- paste(seurat_obj$EZ_annot, seurat_obj$Chr_Num, sep = "_")
+Idents(seurat_obj) <- "celltype.geno"
+ipc1.de <- FindMarkers(seurat_obj, ident.1 = "IPC1_tri", ident.2 = "IPC1_eu", test.use = "MAST", verbose = FALSE)
+head(ipc1.de, n = 10)
+
+#pseudobulk deg 
+
+# pseudobulk the counts based on donor-condition-celltype
+pseudo_seurat_obj<- AggregateExpression(seurat_obj, assays = "ComBatSeq", return.seurat = T, group.by = c("EZ_annot","Chr_Num"))
+Idents(pseudo_seurat_obj) <- "EZ_annot"
+# each 'cell' is a donor-condition-celltype pseudobulk profile
+pseudo_seurat_obj$celltype.geno <- paste(pseudo_seurat_obj$EZ_annot, pseudo_seurat_obj$Chr_Num, sep = "_")
+Cells(pseudo_seurat_obj)
+Idents(pseudo_seurat_obj) <- "celltype.geno"
+bulk.exn1.de <- FindMarkers(object = pseudo_seurat_obj, 
+                         ident.1 = "IPC1_tri", 
+                         ident.2 = "IPC1_eu",
+                         test.use = "MAST")
+head(bulk.ipc1.de , n = 15)
+
+```
+
+```{r}
+cells_group_1 <- WhichCells(pseudo_seurat_obj, idents = "ExN1 (upper layer)_eu")
+cells_group_2 <- WhichCells(pseudo_seurat_obj, idents = "ExN1 (upper layer)_tri")
+
+length(cells_group_1)  # Number of cells in group 1
+length(cells_group_2)  # Number of cells in group 2
+
+```
+
+```{r}
+# Extract unique identities
+idents <- unique(Idents(seurat_obj))
+
+# Initialize a list to store results
+de_results <- list()
+
+# Nested loop to iterate through each pair of identities
+# Loop through the idents vector in steps of 2
+for (i in seq(2, length(idents), by = 2)) {
+  ident1 <- idents[i]
+  ident2 <- idents[i - 1]
+  
+  # Perform differential expression analysis
+  de_result <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = ident1,
+    ident.2 = ident2,
+    test.use = "MAST" # or any other method
+  )
+    
+    # Store results in a list with a descriptive name
+    comparison_name <- paste(ident1, "vs", ident2, sep = "_")
+    de_results[[comparison_name]] <- de_result
+  }
 
 
+# The de_results list now contains DE results for every pair of idents
+
+#plot DEG results as volcano plots 
+  EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'pvalue')
+```
+```{r}
+# Extract unique identities
+# Extract unique identities and convert to character
+idents <- unique(as.character(Idents(seurat_obj)))
+
+# Sort the character vector alphabetically
+idents <- sort(idents)
+
+# Initialize a list to store results
+de_results <- list()
+
+# Nested loop to iterate through each pair of identities
+# Loop through the idents vector in steps of 2
+for (i in seq(2, length(idents), by = 2)) {
+  ident1 <- idents[i]
+  ident2 <- idents[i - 1]
+  
+  # Perform differential expression analysis
+  de_result <- FindMarkers(
+    object = seurat_obj,
+    ident.1 = ident1,
+    ident.2 = ident2,
+    test.use = "MAST" # or any other method
+  )
+    
+  # Store results in a list with a descriptive name
+  comparison_name <- paste(ident1, "vs", ident2, sep = "_")
+  de_results[[comparison_name]] <- de_result
+
+  # Generate a volcano plot for this comparison
+  EnhancedVolcano(
+    de_result,
+    lab = rownames(de_result),
+    x = 'avg_log2FC',        # Column for log2 fold change
+    y = 'p_val_adj',     # Column for adjusted p-value
+    title = comparison_name,
+    xlab = "Log2 Fold Change",
+    ylab = "-Log10 Adjusted P-value",
+    pCutoff = 0.05#,      # Adjust the cutoff as needed
+    #FCcutoff = 1.5       # Adjust the fold change cutoff as needed
+  )
+
+  # Optionally, save the plot to a file
+  ggsave(
+    filename = paste0(comparison_name, "_volcano.png"),
+    plot = last_plot(),
+    width = 8,
+    height = 6
+  )
+}
+
+#save results of each comparison as a csv file
+
+for (name in names(de_results)) {
+  # Create a filename based on the name of the list element
+  file_name <- paste0(name, ".csv")
+  
+  # Save the data frame as a CSV file
+  write.csv(de_results[[name]], file = file_name, row.names = TRUE)
+}
+
+# The de_results list now contains DE results for every pair of idents
+
+```
+
+##Explore OL/OPC clusters 
+#Combine early and late stage OPC clusters (21 & 9) and perform DEG analysis 
+```{r}
+#Merge cluster 9 and 21 
+seurat_obj <- RenameIdents(object = seurat_obj, `OPC-early stage` = "OPC")
+seurat_obj <- RenameIdents(object = seurat_obj, `OPC-late stage ` = "OPC")
+
+seurat_obj$celltype.geno2 <- paste(Idents(seurat_obj), seurat_obj$Chr_Num, sep = "_")
+Idents(seurat_obj) <- "celltype.geno2"
+unique(Idents(seurat_obj))
+opc_merge_de <- FindMarkers(seurat_obj, ident.1 = "OPC_tri", ident.2 = "OPC_eu", test.use = "MAST", verbose = FALSE)
+head(opc_merge_de, n = 10)
+
+#plot merged opc de results 
+
+ EnhancedVolcano(
+    opc_merge_de,
+    lab = rownames(opc_merge_de),
+    x = 'avg_log2FC',        # Column for log2 fold change
+    y = 'p_val_adj',     # Column for adjusted p-value
+    title = "OPC early & late stage (21+9) tri v eu",
+    xlab = "Log2 Fold Change",
+    ylab = "-Log10 Adjusted P-value",
+    pCutoff = 0.05#,      # Adjust the cutoff as needed
+    #FCcutoff = 1.5       # Adjust the fold change cutoff as needed
+  )
+
+  # Optionally, save the plot to a file
+  ggsave(
+    filename =  "opcmergede_volcano.png",
+    plot = last_plot(),
+    width = 8,
+    height = 6
+  )
+```
+
+###Recluster OL/OPC clusters 
+```{r}
+#Recluster/subcluster early stage OPCs 
+
+#Recluster/subcluster late stage OPCs 
+
+#Recluster early + late stage OPCs together 
+OPC_seurat <- subset(seurat_obj, idents = "OPC")
+
+set.seed(123456)
+
+OPC_seurat <- OPC_seurat %>%
+  NormalizeData(assay = "ComBatSeq") %>%
+  FindVariableFeatures(selection.method = "vst", assay = "ComBatSeq",nfeatures = 2000) %>% 
+  ScaleData(assay = "ComBatSeq") 
+
+OPC_seurat <- RunPCA(
+  OPC_seurat,
+  assay = "ComBatSeq",reduction.name = "combat_pca"
+)
+
+ElbowPlot(OPC_seurat, reduction = "combat_pca")
 
 
+OPC_seurat <- RunUMAP(OPC_seurat, assay = "ComBatSeq", dims = 1:20, reduction = "combat_pca",reduction.name  = "combat_umap")
+DefaultAssay(OPC_seurat) <- "ComBatSeq"
+DimPlot(OPC_seurat, reduction = "combat_umap") 
+#SNN analysis for clustering 
+OPC_seurat <- FindNeighbors(object = OPC_seurat,reduction = "combat_pca")
+#Cluster determination 
+OPC_seurat <- FindClusters(object = OPC_seurat,resolution =  c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
 
+DimPlot(OPC_seurat, reduction = "combat_umap", split.by = "sample") 
+Idents(object = OPC_seurat) <- "ComBatSeq_snn_res.0.2"
+# Plot the UMAP
+DimPlot(OPC_seurat,
+        reduction = "combat_umap",
+        label = TRUE,
+        label.size = 4)
+
+#Investigate Cluster identities and compositions to see if there are any genotype specific clusters 
+```
+
+###Recluster cluster 19 glial progenitors 
+```{r}
+
+```
+
+##Explore InN clusters 
+#combine InN clusters and perform DEG analysis 
+```{r}
+
+```
+
+###Recluster InN clusters 
+```{r}
+#Recluster InN1 and InN2 together 
+```
+
+###GO Enrichment with Enrichr/David OL/OPC and InN clusters 
+
+```{r}
+
+```
+
+###Pseudotime analysis using monocle3
+```{r}
+
+```
 
 
 
