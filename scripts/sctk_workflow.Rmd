@@ -874,11 +874,6 @@ DimPlot(seurat_obj,
         label = TRUE,
         label.size = 4)
 ```
-```{r}
-degs_2 <- FindMarkers(seurat_obj,ident.1 = "eu",ident.2="tri", subset.ident = "2")
-
-
-```
 
 ###Dotplots for each cell type
 ```{r}
@@ -959,7 +954,6 @@ DotPlot(seurat_obj,cluster13_markers$gene) + RotatedAxis()
 # Close the device to save the file
 dev.off()
 
-
 markers$Gene[markers$Gene == "PV"] <- "PVALB"
 
 integ_canon_markers <- all_markers %>%
@@ -968,6 +962,7 @@ integ_canon_markers <- all_markers %>%
 
 write.csv(integ_canon_markers,"ComBatSeq_all_canonmarkers.csv", row.names = FALSE)
 ```
+
 ```{r}
 
 #remove cluster 22 as it is only coming from one line
@@ -1244,6 +1239,9 @@ unique(Idents(seurat_obj))
 opc_merge_de <- FindMarkers(seurat_obj, ident.1 = "OPC_tri", ident.2 = "OPC_eu", test.use = "MAST", verbose = FALSE)
 head(opc_merge_de, n = 10)
 
+write.csv(opc_merge_de, file = "opc_merge_de.csv", row.names = TRUE)
+
+
 #plot merged opc de results 
 
  EnhancedVolcano(
@@ -1265,11 +1263,14 @@ head(opc_merge_de, n = 10)
     width = 8,
     height = 6
   )
+
+
 ```
 
 ###Recluster OL/OPC clusters 
 ```{r}
-#Recluster/subcluster early stage OPCs 
+#Recluster/subcluster early stage OPCs
+early_OPC_seurat <- subset(seurat_obj, idents = "OPC-early stage")
 
 #Recluster/subcluster late stage OPCs 
 
@@ -1290,25 +1291,41 @@ OPC_seurat <- RunPCA(
 
 ElbowPlot(OPC_seurat, reduction = "combat_pca")
 
-
 OPC_seurat <- RunUMAP(OPC_seurat, assay = "ComBatSeq", dims = 1:20, reduction = "combat_pca",reduction.name  = "combat_umap")
 DefaultAssay(OPC_seurat) <- "ComBatSeq"
 DimPlot(OPC_seurat, reduction = "combat_umap") 
 #SNN analysis for clustering 
 OPC_seurat <- FindNeighbors(object = OPC_seurat,reduction = "combat_pca")
 #Cluster determination 
-OPC_seurat <- FindClusters(object = OPC_seurat,resolution =  c(0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
+OPC_seurat <- FindClusters(object = OPC_seurat,resolution =  c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2))
 
 DimPlot(OPC_seurat, reduction = "combat_umap", split.by = "sample") 
-Idents(object = OPC_seurat) <- "ComBatSeq_snn_res.0.2"
+Idents(object = OPC_seurat) <- "ComBatSeq_snn_res.0.1"
 # Plot the UMAP
 DimPlot(OPC_seurat,
         reduction = "combat_umap",
         label = TRUE,
         label.size = 4)
+OPC_seurat <- BuildClusterTree(object = OPC_seurat)
+PlotClusterTree(OPC_seurat, direction = "downwards")
 
 #Investigate Cluster identities and compositions to see if there are any genotype specific clusters 
+
+# Fetch data and count cells per cluster by Differentiation
+n_cells <- FetchData(OPC_seurat, vars = c("Differentiation", 'Chr_Num')) %>%
+  mutate(cluster = Idents(OPC_seurat)) %>%
+  dplyr::count(cluster, Chr_Num)
+
+# Stacked bar plot of number of cells per cluster by Differentiation
+ggplot(n_cells, aes(x = cluster, y = n, fill = Chr_Num)) +
+  geom_bar(position = "stack", stat = "identity") +
+  #geom_text(aes(label = n), vjust = 1.5, position = position_stack(vjust = 0.5)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate labels by 45 degrees
+  xlab("Cluster") + 
+  ylab("Number of Cells") + 
+  ggtitle("Number of Cells per Cluster by Line")
 ```
+
 
 ###Recluster cluster 19 glial progenitors 
 ```{r}
@@ -1329,15 +1346,196 @@ DimPlot(OPC_seurat,
 ###GO Enrichment with Enrichr/David OL/OPC and InN clusters 
 
 ```{r}
+library(enrichR)
+dbs <- c("GO_Molecular_Function_2021", "GO_Cellular_Component_2021", "GO_Biological_Process_2021")
+#split df into positive an negative fc 
+
+opc_merge_up <- opc_merge_de %>%
+  subset(avg_log2FC > 0)
+
+opc_merge_down <- opc_merge_de %>%
+  subset(avg_log2FC < 0)
+enriched_up <- enrichr(rownames(opc_merge_up), dbs)
+enriched_down <- enrichr(rownames(opc_merge_down), dbs)
+#> Uploading data to Enrichr... Done.
+#>   Querying GO_Molecular_Function_2015... Done.
+#>   Querying GO_Cellular_Component_2015... Done.
+#>   Querying GO_Biological_Process_2015... Done.
+#> Parsing results... Done.
+
+plotEnrich(enriched_up[[3]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value")
+plotEnrich(enriched_down[[3]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value")
 
 ```
 
 ###Pseudotime analysis using monocle3
 ```{r}
+library(monocle3)
+# # Extract the assay data
+# combatseq_data <- GetAssayData(seurat_obj, assay = "ComBatSeq", slot = "counts")
+# # Extract the cell-level metadata
+# metadata <- seurat_obj@meta.data
+# # Create a new Seurat object
+# seurat_obj_combat <- CreateSeuratObject(counts = combatseq_data, meta.data = metadata)
+# # Add the "ComBatSeq" assay to the new Seurat object
+# seurat_obj_combat[["ComBatSeq"]] <- CreateAssayObject(counts = combatseq_data)
+# DefaultAssay(seurat_obj_combat) <- "ComBatSeq"
+
+DefaultAssay(seurat_obj) <- "ComBatSeq"
+cds <- as.cell_data_set(seurat_obj)
+
+# to get cell metadata
+colData(cds)
+# to gene metdata
+fData(cds)
+rownames(fData(cds))[1:10]
+
+# since it misses the gene_short_name column, let's add it
+fData(cds)$gene_short_name <- rownames(fData(cds))
+
+# to get counts
+counts(cds)
+
+# ...2. Cluster cells (using clustering info from seurat's UMAP)---------------------------
+# let's use the clustering information have
+
+# assign paritions
+recreate.partition <- c(rep(1,length(cds@colData@rownames)))
+names(recreate.partition) <- cds@colData@rownames
+recreate.partition <- as.factor(recreate.partition)
+
+
+cds@clusters$UMAP$partitions <- recreate.partition
+
+# Assign the cluster info 
+
+list_cluster <- seurat_obj@active.ident
+cds@clusters$UMAP$clusters <- list_cluster
+
+
+# Assign UMAP coordinate - cell embeddings
+
+cds@int_colData@listData$reducedDims$UMAP <- seurat_obj@reductions$combat_umap@cell.embeddings
+
+#seurat_obj_combat@active.ident <- seurat_obj_combat$EZ_annot
 
 ```
 
+```{r}
+# plot
 
+cluster.before.trajectory <- plot_cells(cds,
+           color_cells_by = 'cluster',
+           label_groups_by_cluster = FALSE,
+           group_label_size = 5) +
+  theme(legend.position = "right")
+
+cluster.names <- plot_cells(cds,
+           color_cells_by = "EZ_annot",
+           label_groups_by_cluster = FALSE,
+           group_label_size = 5) +
+  #scale_color_manual(values = c('red', 'blue', 'green', 'maroon', 'yellow', 'grey', 'cyan')) +
+  theme(legend.position = "right")
+
+cluster.before.trajectory | cluster.names
+
+```
+```{r}
+# ...3. Learn trajectory graph ------------------------
+cds <- learn_graph(cds, use_partition = FALSE)
+
+plot_cells(cds,
+           color_cells_by = 'EZ_annot',
+           label_groups_by_cluster = FALSE,
+           label_branch_points = FALSE,
+           label_roots = TRUE,
+           label_leaves = FALSE,
+           group_label_size = 3)
+
+
+```
+```{r}
+
+# Extract cluster labels
+cluster_labels <- clusters(cds)
+
+# Find clusters containing "RGC" in their label
+rgc_clusters <- grep("RGC", cluster_labels, value = TRUE)
+
+# Select cells from clusters containing "RGC"
+rgc_cells <- colnames(cds[, cluster_labels %in% rgc_clusters])
+
+
+
+cds <- order_cells(cds, reduction_method = 'UMAP', root_cells = rgc_cells)
+
+plot_cells(cds,
+           color_cells_by = 'pseudotime',
+           label_groups_by_cluster = FALSE,
+           label_branch_points = FALSE,
+           label_roots = FALSE,
+           label_leaves = FALSE)
+```
+
+```{r}
+# cells ordered by monocle3 pseudotime
+
+pseudotime(cds)
+cds$monocle3_pseudotime <- pseudotime(cds)
+data.pseudo <- as.data.frame(colData(cds))
+
+ggplot(data.pseudo, aes(monocle3_pseudotime, reorder(EZ_annot, monocle3_pseudotime, median), fill = EZ_annot)) +
+  geom_boxplot()
+
+
+
+
+# ...5. Finding genes that change as a function of pseudotime --------------------
+deg_traj_cells <- graph_test(cds, neighbor_graph = 'principal_graph', cores = 4)
+
+deg_traj_cells %>% 
+  arrange(q_value) %>% 
+  filter(status == 'OK') %>% 
+  head()
+
+FeaturePlot(seurat_obj, features = c('HES4', 'AURKAIP1', 'MRPL20'))
+
+
+# visualizing pseudotime in seurat
+
+seurat_obj$pseudotime <- pseudotime(cds)
+Idents(seurat_obj) <- seurat_obj$EZ_annot
+FeaturePlot(seurat_obj, features = "pseudotime", label = T)
+```
+###Pseudotime on only tri and only eu cells
+
+```{r}
+# Subset cells with "tri" in Chr_Num
+cds_tri <- cds[, colData(cds)$Chr_Num == "tri"]
+
+
+# assign paritions
+recreate.partition <- c(rep(1,length(cds_tri@colData@rownames)))
+names(recreate.partition) <- cds_tri@colData@rownames
+recreate.partition <- as.factor(recreate.partition)
+
+
+cds_tri@clusters$UMAP$partitions <- recreate.partition
+
+# Assign the cluster info 
+
+list_cluster <- seurat_obj@active.ident
+cds@clusters$UMAP$clusters <- list_cluster
+
+
+# Assign UMAP coordinate - cell embeddings
+
+cds@int_colData@listData$reducedDims$UMAP <- seurat_obj@reductions$combat_umap@cell.embeddings
+
+# Subset cells with "eu" in Chr_Num
+cds_eu <- cds[, colData(cds)$Chr_Num == "eu"]
+
+```
 
 
 
